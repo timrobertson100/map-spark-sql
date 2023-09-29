@@ -17,20 +17,24 @@ import org.gbif.maps.common.projection.*;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.stream.Collectors;
 
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.api.java.UDF3;
 
 import com.google.common.collect.Lists;
 
-/** Returns the addresses ... todo */
-public class TilePixelUDF implements UDF3<Integer, Double, Double, String[]>, Serializable {
+/** Returns the addresses ... todo document when ready */
+public class TilePixelUDF implements UDF3<Integer, Double, Double, Row[]>, Serializable {
   static final int TILE_SIZE = 512;
-  static final int BUFFER_SIZE = TILE_SIZE / 4;
-  static final TileProjection projection = Tiles.fromEPSG("EPSG:3857", TILE_SIZE);
-  static final TileSchema tileSchema = TileSchema.fromSRS("EPSG:3857");
+  static final int BUFFER_SIZE = TILE_SIZE / 8;
+  static final TileProjection projection =
+      Tiles.fromEPSG("EPSG:3857", TILE_SIZE); // TODO: projections
+  static final TileSchema tileSchema = TileSchema.fromSRS("EPSG:3857"); // TODO: projections
 
   @Override
-  public String[] call(Integer zoom, Double lat, Double lng) {
+  public Row[] call(Integer zoom, Double lat, Double lng) {
     if (projection.isPlottable(lat, lng)) {
       Double2D globalXY = projection.toGlobalPixelXY(lat, lng, zoom);
 
@@ -45,7 +49,20 @@ public class TilePixelUDF implements UDF3<Integer, Double, Double, String[]>, Se
       // Readdress any coordinates that fall in the boundary region of adjacent tiles
       readdressAndAppend(addresses, globalXY, tileXY, zoom, localXY.getX(), localXY.getY());
 
-      return addresses.toArray(new String[addresses.size()]);
+      List<Row> rows =
+          addresses.stream()
+              .map(
+                  s -> {
+                    String p[] = s.split(",");
+                    return RowFactory.create(
+                        Long.valueOf(p[0]),
+                        Long.valueOf(p[1]),
+                        Integer.valueOf(p[2]),
+                        Integer.valueOf(p[3]));
+                  })
+              .collect(Collectors.toList());
+
+      return rows.toArray(new Row[rows.size()]);
     }
     return null;
   }
@@ -56,6 +73,9 @@ public class TilePixelUDF implements UDF3<Integer, Double, Double, String[]>, Se
    */
   static void readdressAndAppend(
       List<String> target, Double2D globalXY, Long2D tileXY, int zoom, long x, long y) {
+
+    // What follows needs tests and explained. A quick hack
+
     if (zoom > 0) {
       if (y <= BUFFER_SIZE) {
         // N

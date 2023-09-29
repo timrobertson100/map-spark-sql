@@ -16,6 +16,8 @@ package org.gbif.demo;
 import org.apache.spark.SparkConf;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
+import org.apache.spark.sql.types.StructType;
 
 public class SparkMapApp {
   public static void main(String[] args) {
@@ -32,29 +34,40 @@ public class SparkMapApp {
     conf.set("hive.exec.compress.output", "true");
     spark.sql("use " + targetDB);
 
-    // 20 mins
-    // prepareInputDataToTile(spark, source, tilePyramidThreshold);
+    // 20 mins (1min for Bryophytes with phylumKey=35)
+    prepareInputDataToTile(spark, source, tilePyramidThreshold);
 
-    spark.sql("DROP TABLE IF EXISTS map_input_tiles");
-    spark
-        .udf()
-        .register("toTileXY", new TilePixelUDF(), DataTypes.createArrayType(DataTypes.StringType));
-    spark.sparkContext().setJobDescription("Calculating tile coordinates");
+    StructType pixelAddress =
+        DataTypes.createStructType(
+            new StructField[] {
+              DataTypes.createStructField("tileX", DataTypes.LongType, false),
+              DataTypes.createStructField("tileY", DataTypes.LongType, false),
+              DataTypes.createStructField("pixelX", DataTypes.IntegerType, false),
+              DataTypes.createStructField("pixelY", DataTypes.IntegerType, false)
+            });
+
+    spark.udf().register("toTileXY", new TilePixelUDF(), DataTypes.createArrayType(pixelAddress));
+
+    for (int z = 16; z >= 0; z -= 1) {
+      processZoom(spark, z);
+    }
+  }
+
+  private static void processZoom(SparkSession spark, int zoom) {
+    spark.sql("DROP TABLE IF EXISTS z" + zoom + "_map_input_tiles");
+    spark.sparkContext().setJobDescription("Calculating tile coordinates for zoom " + zoom);
+    String z = "z" + zoom;
     spark.sql(
-        "CREATE TABLE map_input_tiles STORED AS parquet AS "
-            + "SELECT mapKey, z0, z1, z2, z3, z4, z5, z6, z7, z8, z9, z10, year, bor, occCount "
-            + "FROM map_input "
-            + "LATERAL VIEW explode(toTileXY(0, lat, lng)) z AS z0 "
-            + "LATERAL VIEW explode(toTileXY(1, lat, lng)) z AS z1 "
-            + "LATERAL VIEW explode(toTileXY(2, lat, lng)) z AS z2 "
-            + "LATERAL VIEW explode(toTileXY(3, lat, lng)) z AS z3 "
-            + "LATERAL VIEW explode(toTileXY(4, lat, lng)) z AS z4 "
-            + "LATERAL VIEW explode(toTileXY(5, lat, lng)) z AS z5 "
-            + "LATERAL VIEW explode(toTileXY(6, lat, lng)) z AS z6 "
-            + "LATERAL VIEW explode(toTileXY(7, lat, lng)) z AS z7 "
-            + "LATERAL VIEW explode(toTileXY(8, lat, lng)) z AS z8 "
-            + "LATERAL VIEW explode(toTileXY(9, lat, lng)) z AS z9 "
-            + "LATERAL VIEW explode(toTileXY(10, lat, lng)) z AS z10");
+        "CREATE TABLE "
+            + z
+            + "_map_input_tiles STORED AS parquet AS "
+            + "SELECT mapKey, z.tileX, z.tileY, z.pixelX, z.pixelY, bor, year, sum(occCount) AS occCount "
+            + "FROM map_input_to_tile "
+            + "LATERAL VIEW explode(toTileXY("
+            + zoom
+            + ", lat, lng)) t AS z"
+            + "GROUP BY mapKey, tileX, tileY, pixelX, pixelY, bor, year, "
+            + z);
   }
 
   /**
@@ -88,9 +101,11 @@ public class SparkMapApp {
             + "    datasetKey, publishingOrgKey, countryCode,publishingCountry, networkKey"
             + "  ) "
             + ") m AS mapKey "
-            + "WHERE decimalLatitude BETWEEN -90 AND 90 "
+            + "WHERE decimalLatitude BETWEEN -90 AND 90 " // AND phylumKey=35 "
             + "GROUP BY mapKey, lat, lng, bor, year");
 
+    // Generating a count table proves faster than the windowing function approach and is simpler to
+    // grok
     spark.sparkContext().setJobDescription("Generating counts per map type");
     spark.sql(
         "CREATE TABLE IF NOT EXISTS map_type_totals STORED AS PARQUET AS "
@@ -98,13 +113,15 @@ public class SparkMapApp {
             + "FROM map_input "
             + "GROUP BY mapKey");
 
+    // Broadcast to avoid the long tail of skew has proven the fastest approach in testing.
+    // A straight join has very large skew
     spark
         .sparkContext()
         .setJobDescription(
             "Filtering input for views with record count >= " + tilePyramidThreshold);
     spark.sql(
         "CREATE TABLE IF NOT EXISTS map_input_to_tile STORED AS PARQUET AS "
-            + "SELECT m.* "
+            + "SELECT /*+ BROADCAST(map_type_totals) */ m.* "
             + "FROM map_input m JOIN map_type_totals t ON m.mapKey = t.mapKey "
             + "WHERE t.total >= "
             + tilePyramidThreshold);
