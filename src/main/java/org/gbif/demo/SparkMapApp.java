@@ -35,7 +35,7 @@ public class SparkMapApp {
     spark.sql("use " + targetDB);
 
     // 20 mins (1min for Bryophytes with phylumKey=35)
-    prepareInputDataToTile(spark, source, tilePyramidThreshold);
+    //prepareInputDataToTile(spark, source, tilePyramidThreshold);
 
     StructType pixelAddress =
         DataTypes.createStructType(
@@ -65,7 +65,7 @@ public class SparkMapApp {
             + "FROM map_input_to_tile "
             + "LATERAL VIEW explode(toTileXY("
             + zoom
-            + ", lat, lng)) t AS z"
+            + ", lat, lng)) t AS z "
             + "GROUP BY mapKey, tileX, tileY, pixelX, pixelY, bor, year, "
             + z);
   }
