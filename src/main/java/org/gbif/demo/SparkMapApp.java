@@ -47,7 +47,7 @@ public class SparkMapApp {
             });
 
     spark.udf().register("toTileXY", new TilePixelUDF(), DataTypes.createArrayType(pixelAddress));
-
+    spark.udf().register("toMVT", new VectorTileUDAF()); // deprecated in Spark 3
     for (int z = 16; z >= 0; z -= 1) {
       processZoom(spark, z);
     }
@@ -67,6 +67,16 @@ public class SparkMapApp {
             + zoom
             + ", lat, lng)) t AS z "
             + "GROUP BY mapKey, tileX, tileY, pixelX, pixelY, bor, year");
+
+    spark.sql(
+        "CREATE TABLE "
+            + z
+            + "_map_tiles STORED AS parquet AS "
+            + "SELECT mapKey, tileX, tileY, pixelX, pixelY, toMVT(bor, year, occCount) AS data "
+            + "FROM "
+            + z
+            + "_map_input_tiles "
+            + "GROUP BY mapKey, tileX, tileY, pixelX, pixelY");
   }
 
   /**

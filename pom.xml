@@ -15,6 +15,7 @@
         <spark.version>2.3.0</spark.version>
         <scala.binary.version>2.11</scala.binary.version>
         <gbif.maps.version>0.36.1</gbif.maps.version>
+        <lombok.version>1.18.30</lombok.version>
         <java.version>1.8</java.version>
     </properties>
 
@@ -23,6 +24,12 @@
             <groupId>org.gbif.maps</groupId>
             <artifactId>common</artifactId>
             <version>${gbif.maps.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.projectlombok</groupId>
+            <artifactId>lombok</artifactId>
+            <version>${lombok.version}</version>
+            <scope>provided</scope>
         </dependency>
         <dependency>
             <groupId>org.apache.spark</groupId>
