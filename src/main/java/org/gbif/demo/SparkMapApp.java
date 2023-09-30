@@ -52,6 +52,10 @@ public class SparkMapApp {
             });
     spark.udf().register("project", new GlobalPixelUDF(), DataTypes.createArrayType(globalAddress));
 
+    spark
+        .sparkContext()
+        .setJobDescription("Projecting data");
+
     spark.sql("DROP TABLE IF EXISTS map_projected");
     spark.sql(
         "CREATE TABLE map_projected STORED AS parquet AS "

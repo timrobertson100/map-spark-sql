@@ -13,10 +13,12 @@
  */
 package org.gbif.demo;
 
+import com.google.common.collect.Sets;
 import org.gbif.maps.common.projection.*;
 
 import java.io.Serializable;
 import java.util.List;
+import java.util.Set;
 
 import org.apache.spark.sql.api.java.UDF13;
 
@@ -58,7 +60,7 @@ public class MapKeysUDF
       String countryCode,
       String publishingCountry,
       WrappedArray<String> networkKeys) {
-    List<String> keys = Lists.newArrayList("ALL:0");
+    Set<String> keys = Sets.newHashSet("ALL:0");
     appendNonNull(keys, "TAXON", kingdomKey);
     appendNonNull(keys, "TAXON", phylumKey);
     appendNonNull(keys, "TAXON", classKey);
@@ -79,7 +81,7 @@ public class MapKeysUDF
     return keys.toArray(new String[keys.size()]);
   }
 
-  static void appendNonNull(List<String> target, String prefix, Object l) {
+  static void appendNonNull(Set<String> target, String prefix, Object l) {
     if (l != null) target.add(prefix + ":" + l);
   }
 }
