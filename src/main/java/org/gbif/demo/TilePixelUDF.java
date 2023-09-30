@@ -74,7 +74,7 @@ public class TilePixelUDF implements UDF3<Integer, Double, Double, Row[]>, Seria
   static void readdressAndAppend(
       List<String> target, Double2D globalXY, Long2D tileXY, int zoom, long x, long y) {
 
-    // What follows needs tests and explained. A quick hack
+    // What follows needs tests and explained. A quick hack that doesn't deal with date lines
 
     if (zoom > 0) {
       if (y <= BUFFER_SIZE) {

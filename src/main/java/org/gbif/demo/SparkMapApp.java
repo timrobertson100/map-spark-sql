@@ -35,7 +35,7 @@ public class SparkMapApp {
     spark.sql("use " + targetDB);
 
     // 20 mins (1min for Bryophytes with phylumKey=35)
-    // prepareInputDataToTile(spark, source, tilePyramidThreshold);
+    prepareInputDataToTile(spark, source, tilePyramidThreshold);
 
     StructType pixelAddress =
         DataTypes.createStructType(
@@ -55,6 +55,7 @@ public class SparkMapApp {
 
   private static void processZoom(SparkSession spark, int zoom) {
     spark.sql("DROP TABLE IF EXISTS z" + zoom + "_map_input_tiles");
+    spark.sql("DROP TABLE IF EXISTS z" + zoom + "_map_tiles");
     spark.sparkContext().setJobDescription("Calculating tile coordinates for zoom " + zoom);
     String z = "z" + zoom;
     spark.sql(
