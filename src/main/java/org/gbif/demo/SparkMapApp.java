@@ -35,12 +35,6 @@ public class SparkMapApp {
     conf.set("hive.exec.compress.output", "true");
     spark.sql("use " + targetDB);
 
-    // 600 cores 6.5 mins, 300 cores 15 mins (1 min for Bryophytes using phylumKey=35)
-    // prepareInputDataToTile(spark, source, tilePyramidThreshold);
-    processZoom(spark, 16, tilePyramidThreshold);
-  }
-
-  private static void processZoom(SparkSession spark, int maxZoom, int threshold) {
     StructType globalAddress =
         DataTypes.createStructType(
             new StructField[] {
@@ -48,25 +42,38 @@ public class SparkMapApp {
               DataTypes.createStructField("x", DataTypes.LongType, false),
               DataTypes.createStructField("y", DataTypes.LongType, false)
             });
-    spark.udf().register("project", new GlobalPixelUDF(), DataTypes.createArrayType(globalAddress));
+    spark.udf().register("project", new GlobalPixelUDF(), globalAddress);
 
-    spark.sparkContext().setJobDescription("Projecting data with threshold >= " + threshold);
+    // 600 cores 6.5 mins, 300 cores 15 mins (1 min for Bryophytes using phylumKey=35)
+    // prepareInputDataToTile(spark, source, tilePyramidThreshold);
+    for (int z = 0; z < 16; z++) {
+      processZoom(spark, z, tilePyramidThreshold);
+    }
+  }
+
+  private static void processZoom(SparkSession spark, int zoom, int threshold) {
+
+    spark
+        .sparkContext()
+        .setJobDescription("Projecting data for zoom " + zoom + "  with threshold >= " + threshold);
     spark.sql("DROP TABLE IF EXISTS map_projected");
     spark.sql(
-        "CREATE TABLE map_projected STORED AS parquet AS "
+        "CREATE TABLE map_projected"
+            + zoom
+            + "  STORED AS parquet AS "
             + "SELECT "
-            + "  /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
-            + "  mapKey, z, x, y, collect_list(map(borYear,occCount)) as data "
+            + "  mapKey, zxy.z, zxy.x, zxy.y, collect_list(map(borYear,occCount)) as data "
             + "FROM ("
-            + "  SELECT m.mapKey, xy.z AS z, xy.x AS x, xy.y AS y, m.borYear, sum(m.occCount) AS occCount   "
+            + "  SELECT "
+            + "  /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
+            + "  m.mapKey, project("
+            + zoom
+            + ", lat, lng) AS zxy, m.borYear, sum(m.occCount) AS occCount   "
             + "  FROM map_input m "
             + "  JOIN map_stats s ON m.mapKey = s.mapKey " // filters to maps above threshold
-            + "  LATERAL VIEW explode(project("
-            + maxZoom
-            + ", lat, lng)) p AS xy "
-            + "  GROUP BY m.mapKey, xy.z, xy.x, xy.y, m.borYear"
+            + "  GROUP BY m.mapKey, zxy, m.borYear"
             + ") t "
-            + "GROUP BY mapKey, z, x, y");
+            + "GROUP BY mapKey, zxy.z, zxy.x, zxy.y");
   }
 
   /**

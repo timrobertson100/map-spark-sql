@@ -13,29 +13,45 @@
  */
 package org.gbif.demo;
 
-import org.gbif.maps.common.projection.*;
+import org.gbif.maps.common.projection.Double2D;
+import org.gbif.maps.common.projection.TileProjection;
+import org.gbif.maps.common.projection.Tiles;
 
 import java.io.Serializable;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.api.java.UDF3;
 
-/** Returns the addresses ... todo document when ready */
-public class GlobalPixelUDF implements UDF3<Integer, Double, Double, Row>, Serializable {
+/**
+ * This version proves fragile with Spark. It puts out so many options to group by we start to see
+ * issues with the current configuration. Likely to be removed.
+ */
+public class GlobalPixelUDF2 implements UDF3<Integer, Double, Double, Row[]>, Serializable {
   static final int TILE_SIZE = 512;
   static final TileProjection projection =
       Tiles.fromEPSG("EPSG:3857", TILE_SIZE); // TODO: projections
 
   @Override
-  public Row call(Integer zoom, Double lat, Double lng) {
+  public Row[] call(Integer maxZoom, Double lat, Double lng) {
     if (projection.isPlottable(lat, lng)) {
+      List<Row> result = new ArrayList<>();
 
       // Global coordinates for the projection at the maximum zoom
-      Double2D globalXY = projection.toGlobalPixelXY(lat, lng, zoom);
+      Double2D globalXY = projection.toGlobalPixelXY(lat, lng, maxZoom);
       long x = Double.valueOf(globalXY.getX()).longValue();
       long y = Double.valueOf(globalXY.getY()).longValue();
-      return RowFactory.create(zoom, Long.valueOf(x), Long.valueOf(y));
+      result.add(RowFactory.create(maxZoom, Long.valueOf(x), Long.valueOf(y)));
+
+      // downscale global coordinates
+      for (int z = maxZoom - 1; z >= 0; z--) {
+        x = x / 2;
+        y = y / 2;
+        result.add(RowFactory.create(z, x, y));
+      }
+      return result.toArray(new Row[result.size()]);
     }
     return null;
   }
