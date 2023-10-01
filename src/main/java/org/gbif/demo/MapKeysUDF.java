@@ -13,16 +13,14 @@
  */
 package org.gbif.demo;
 
-import com.google.common.collect.Sets;
 import org.gbif.maps.common.projection.*;
 
 import java.io.Serializable;
-import java.util.List;
 import java.util.Set;
 
 import org.apache.spark.sql.api.java.UDF13;
 
-import com.google.common.collect.Lists;
+import com.google.common.collect.Sets;
 
 import scala.collection.JavaConversions;
 import scala.collection.mutable.WrappedArray;

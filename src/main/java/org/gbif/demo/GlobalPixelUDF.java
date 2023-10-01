@@ -24,20 +24,25 @@ import org.apache.spark.sql.RowFactory;
 import org.apache.spark.sql.api.java.UDF3;
 
 /** Returns the addresses ... todo document when ready */
-public class GlobalPixelUDF implements UDF3<Integer, Double, Double, Row[]>, Serializable {
+public class GlobalPixelUDF implements UDF3<Short, Double, Double, Row[]>, Serializable {
   static final int TILE_SIZE = 512;
   static final TileProjection projection =
       Tiles.fromEPSG("EPSG:3857", TILE_SIZE); // TODO: projections
 
   @Override
-  public Row[] call(Integer maxZoom, Double lat, Double lng) {
+  public Row[] call(Short maxZoom, Double lat, Double lng) {
     if (projection.isPlottable(lat, lng)) {
       List<Row> result = new ArrayList<>();
-      for (int z = 0; z <= maxZoom; z++) {
-        Double2D globalXY = projection.toGlobalPixelXY(lat, lng, z);
-        long x = Double.valueOf(globalXY.getX()).longValue();
-        long y = Double.valueOf(globalXY.getY()).longValue();
-        result.add(RowFactory.create(z, Long.valueOf(x), Long.valueOf(y)));
+
+      // Global coordinates for the projection at the maximum zoom
+      Double2D globalXY = projection.toGlobalPixelXY(lat, lng, Short.toUnsignedInt(maxZoom));
+      long x = Double.valueOf(globalXY.getX()).longValue();
+      long y = Double.valueOf(globalXY.getY()).longValue();
+      result.add(RowFactory.create(maxZoom, Long.valueOf(x), Long.valueOf(y)));
+
+      // downscale global coordinates
+      for (int z = maxZoom - 1; z >= 0; z--) {
+        result.add(RowFactory.create(z, x / 2, y / 2));
       }
       return result.toArray(new Row[result.size()]);
     }
