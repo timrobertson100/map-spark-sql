@@ -35,7 +35,7 @@ public class SparkMapApp {
     conf.set("hive.exec.compress.output", "true");
     spark.sql("use " + targetDB);
 
-    // 6.5 mins (1 min for Bryophytes with phylumKey=35)
+    // 600 cores 6.5 mins, 300 cores 15 mins (1 min for Bryophytes using phylumKey=35)
     // prepareInputDataToTile(spark, source, tilePyramidThreshold);
     processZoom(spark, 16, tilePyramidThreshold);
   }
@@ -44,7 +44,7 @@ public class SparkMapApp {
     StructType globalAddress =
         DataTypes.createStructType(
             new StructField[] {
-              DataTypes.createStructField("z", DataTypes.ShortType, false),
+              DataTypes.createStructField("z", DataTypes.IntegerType, false),
               DataTypes.createStructField("x", DataTypes.LongType, false),
               DataTypes.createStructField("y", DataTypes.LongType, false)
             });
@@ -58,13 +58,13 @@ public class SparkMapApp {
             + "  /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
             + "  mapKey, z, x, y, collect_list(map(borYear,occCount)) as data "
             + "FROM ("
-            + "  SELECT mapKey, xy.z, xy.x, xy.y, borYear, sum(occCount) AS occCount   "
-            + "  FROM map_input "
+            + "  SELECT m.mapKey, xy.z AS z, xy.x AS x, xy.y AS y, m.borYear, sum(m.occCount) AS occCount   "
+            + "  FROM map_input m "
             + "  JOIN map_stats s ON m.mapKey = s.mapKey " // filters to maps above threshold
             + "  LATERAL VIEW explode(project("
             + maxZoom
             + ", lat, lng)) p AS xy "
-            + "  GROUP BY mapKey, z, x, y, borYear"
+            + "  GROUP BY m.mapKey, xy.z, xy.x, xy.y, m.borYear"
             + ") t "
             + "GROUP BY mapKey, z, x, y");
   }
@@ -105,7 +105,8 @@ public class SparkMapApp {
             + "  occurrenceStatus='PRESENT' " // AND phylumKey=35
             + "GROUP BY mapKey, lat, lng, borYear");
 
-    // Generating a stats table proves faster than a windowing function and is simpler to grok
+    // Generating and broadcasting a stats table proves much faster than a windowing function and is
+    // simpler to grok
     spark.sparkContext().setJobDescription("Creating stats on input");
     spark.sql(
         "CREATE TABLE IF NOT EXISTS map_stats STORED AS PARQUET AS "
