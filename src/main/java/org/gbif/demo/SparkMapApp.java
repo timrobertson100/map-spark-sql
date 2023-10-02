@@ -22,48 +22,25 @@ public class SparkMapApp {
 
     String source = args.length == 2 ? args[0] : "prod_h.occurrence";
     String targetDB = args.length == 2 ? args[1] : "tim";
-    int tilePyramidThreshold =
-        250000; // only tile maps with more than 250000 records (TODO: or maybe unique coords?)
+    int tilePyramidThreshold = 250000;
 
     SparkSession spark =
         SparkSession.builder().appName("SparkMapTest").enableHiveSupport().getOrCreate();
     SparkConf conf = spark.sparkContext().conf();
 
-    conf.set("hive.exec.compress.output", "true");
+    conf.set("hive.exec.compress.output", "true"); // TODO: needed?
     spark.sql("use " + targetDB);
 
-    StructType globalAddress =
-        DataTypes.createStructType(
-            new StructField[] {
-              DataTypes.createStructField("z", DataTypes.IntegerType, false),
-              DataTypes.createStructField("x", DataTypes.LongType, false),
-              DataTypes.createStructField("y", DataTypes.LongType, false)
-            });
-    spark.udf().register("project", new GlobalPixelUDF(), globalAddress);
-
+    registerUDFs(spark);
     // prepareInputDataToTile(spark, source, tilePyramidThreshold);
-    for (int z = 4; z >= 0; z--) {
-      processZoom(spark, z, tilePyramidThreshold);
+    for (int z = 16; z >= 0; z--) {
+      processZoom(spark, z);
     }
   }
 
-  private static void processZoom(SparkSession spark, int zoom, int threshold) {
+  private static void processZoom(SparkSession spark, int zoom) {
+    spark.sparkContext().setJobDescription("Processing zoom " + zoom);
 
-    DataType pixelAddresses =
-        DataTypes.createArrayType(
-        DataTypes.createStructType(
-            new StructField[] {
-              // Designed to work until zoom 16; higher requires tileXY to be LongType
-              DataTypes.createStructField("tileX", DataTypes.IntegerType, false),
-              DataTypes.createStructField("tileY", DataTypes.IntegerType, false),
-              DataTypes.createStructField("pixelX", DataTypes.IntegerType, false),
-              DataTypes.createStructField("pixelY", DataTypes.IntegerType, false)
-            }));
-    spark.udf().register("collectToTiles", new TileXYUDF(), pixelAddresses);
-
-    spark
-        .sparkContext()
-        .setJobDescription("Projecting data for zoom " + zoom + "  with threshold >= " + threshold);
     spark.sql("DROP TABLE IF EXISTS map_projected_" + zoom);
     // SQL written and optimised for Spark 2.3 using available UDFs.
     // Further optimisations should be explored for Spark 3.x+ (hint: aggregation functions)
@@ -86,14 +63,15 @@ public class SparkMapApp {
                 + "      struct(m.borYear, sum(m.occCount) AS occCount) AS borYearCount "
                 + "    FROM "
                 + "      map_input m "
-                + "      JOIN map_stats s ON m.mapKey = s.mapKey " // filters to maps above threshold
-                + "    WHERE zxy.z IS NOT NULL AND zxy.x IS NOT NULL AND zxy.y IS NOT NULL"
-                + "    GROUP BY m.mapKey, zxy, m.borYear "
+                + "      JOIN map_stats s ON m.mapKey = s.mapKey " // filters to maps above
+                // threshold
 
+                + "    GROUP BY m.mapKey, zxy, m.borYear "
                 + "  ) t "
                 + "GROUP BY mapKey, zxy"
                 + ") f "
-                + "LATERAL VIEW explode(collectToTiles(zxy.z, zxy.x, zxy.y)) t AS tile",
+                + "LATERAL VIEW explode(collectToTiles(zxy.z, zxy.x, zxy.y)) t AS tile "
+                + "WHERE zxy.z IS NOT NULL AND zxy.x IS NOT NULL AND zxy.y IS NOT NULL",
             zoom, zoom));
   }
 
@@ -104,11 +82,8 @@ public class SparkMapApp {
   private static void prepareInputDataToTile(SparkSession spark, String source, int threshold) {
     spark.sql("DROP TABLE IF EXISTS map_input");
     spark.sql("DROP TABLE IF EXISTS map_stats");
-    ArrayType arrayOfStrings = DataTypes.createArrayType(DataTypes.StringType);
-    spark.udf().register("mapKeys", new MapKeysUDF(), arrayOfStrings);
 
     spark.sparkContext().setJobDescription("Reading input data");
-    spark.udf().register("encodeBorYear", new EncodeBorYearUDF(), DataTypes.IntegerType);
     spark.sql(
         String.format(
             "CREATE TABLE IF NOT EXISTS map_input STORED AS parquet AS "
@@ -116,13 +91,13 @@ public class SparkMapApp {
                 + "  mapKey, "
                 + "  decimalLatitude AS lat, "
                 + "  decimalLongitude AS lng, "
-                + "  encodeBorYear(basisOfRecord, year) AS borYear, " // TODO: test performance as a
-                // struct()
+                + "  encodeBorYear(basisOfRecord, year) AS borYear, " // TODO: performance as a
+                // struct()?
                 + "  count(*) AS occCount "
                 + "FROM "
                 + "  %s "
                 + "  LATERAL VIEW explode(  "
-                + "    mapKeys("
+                + "    mapKeys(" // TODO: performance as a collect_set?
                 + "      kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
                 + "      datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
                 + "    ) "
@@ -135,9 +110,8 @@ public class SparkMapApp {
                 + "GROUP BY mapKey, lat, lng, borYear",
             source));
 
-    // Generating and broadcasting a stats table proves much faster than a windowing function and is
-    // simpler to grok
-    spark.sparkContext().setJobDescription("Creating stats on input");
+    // Broadcasting a stats table proves faster than a windowing function and is simpler to grok
+    spark.sparkContext().setJobDescription("Creating input stats using threshold of " + threshold);
     spark.sql(
         String.format(
             "CREATE TABLE IF NOT EXISTS map_stats STORED AS PARQUET AS "
@@ -146,5 +120,37 @@ public class SparkMapApp {
                 + "GROUP BY mapKey "
                 + "HAVING count(*) >= %d",
             threshold));
+  }
+
+  private static void registerUDFs(SparkSession spark) {
+    spark
+        .udf()
+        .register("mapKeys", new MapKeysUDF(), DataTypes.createArrayType(DataTypes.StringType));
+    spark.udf().register("encodeBorYear", new EncodeBorYearUDF(), DataTypes.IntegerType);
+    spark
+        .udf()
+        .register(
+            "project",
+            new GlobalPixelUDF(),
+            DataTypes.createStructType(
+                new StructField[] {
+                  DataTypes.createStructField("z", DataTypes.IntegerType, false),
+                  DataTypes.createStructField("x", DataTypes.LongType, false),
+                  DataTypes.createStructField("y", DataTypes.LongType, false)
+                }));
+    spark
+        .udf()
+        .register(
+            "collectToTiles",
+            new TileXYUDF(),
+            DataTypes.createArrayType(
+                DataTypes.createStructType(
+                    new StructField[] {
+                      // Designed to work until zoom 16; higher requires tileXY to be LongType
+                      DataTypes.createStructField("tileX", DataTypes.IntegerType, false),
+                      DataTypes.createStructField("tileY", DataTypes.IntegerType, false),
+                      DataTypes.createStructField("pixelX", DataTypes.IntegerType, false),
+                      DataTypes.createStructField("pixelY", DataTypes.IntegerType, false)
+                    })));
   }
 }
