@@ -44,9 +44,8 @@ public class SparkMapApp {
             });
     spark.udf().register("project", new GlobalPixelUDF(), globalAddress);
 
-    // 600 cores 6.5 mins, 300 cores 15 mins (1 min for Bryophytes using phylumKey=35)
-    // prepareInputDataToTile(spark, source, tilePyramidThreshold);
-    for (int z = 0; z < 16; z++) {
+    prepareInputDataToTile(spark, source, tilePyramidThreshold);
+    for (int z = 16; z >= 0; z--) {
       processZoom(spark, z, tilePyramidThreshold);
     }
   }
@@ -56,9 +55,9 @@ public class SparkMapApp {
     spark
         .sparkContext()
         .setJobDescription("Projecting data for zoom " + zoom + "  with threshold >= " + threshold);
-    spark.sql("DROP TABLE IF EXISTS map_projected");
+    spark.sql("DROP TABLE IF EXISTS map_projected_" + zoom);
     spark.sql(
-        "CREATE TABLE map_projected"
+        "CREATE TABLE map_projected_"
             + zoom
             + "  STORED AS parquet AS "
             + "SELECT "
