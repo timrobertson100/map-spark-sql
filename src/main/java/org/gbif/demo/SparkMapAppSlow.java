@@ -40,8 +40,8 @@ public class SparkMapAppSlow {
     StructType pixelAddress =
         DataTypes.createStructType(
             new StructField[] {
-              DataTypes.createStructField("tileX", DataTypes.LongType, false),
-              DataTypes.createStructField("tileY", DataTypes.LongType, false),
+              DataTypes.createStructField("tileX", DataTypes.IntegerType, false),
+              DataTypes.createStructField("tileY", DataTypes.IntegerType, false),
               DataTypes.createStructField("pixelX", DataTypes.IntegerType, false),
               DataTypes.createStructField("pixelY", DataTypes.IntegerType, false)
             });

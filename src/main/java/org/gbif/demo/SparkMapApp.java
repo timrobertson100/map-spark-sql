@@ -15,10 +15,7 @@ package org.gbif.demo;
 
 import org.apache.spark.SparkConf;
 import org.apache.spark.sql.SparkSession;
-import org.apache.spark.sql.types.ArrayType;
-import org.apache.spark.sql.types.DataTypes;
-import org.apache.spark.sql.types.StructField;
-import org.apache.spark.sql.types.StructType;
+import org.apache.spark.sql.types.*;
 
 public class SparkMapApp {
   public static void main(String[] args) {
@@ -44,35 +41,60 @@ public class SparkMapApp {
             });
     spark.udf().register("project", new GlobalPixelUDF(), globalAddress);
 
-    prepareInputDataToTile(spark, source, tilePyramidThreshold);
-    for (int z = 16; z >= 0; z--) {
+    // prepareInputDataToTile(spark, source, tilePyramidThreshold);
+    for (int z = 4; z >= 0; z--) {
       processZoom(spark, z, tilePyramidThreshold);
     }
   }
 
   private static void processZoom(SparkSession spark, int zoom, int threshold) {
 
+    DataType pixelAddresses =
+        DataTypes.createArrayType(
+        DataTypes.createStructType(
+            new StructField[] {
+              // Designed to work until zoom 16; higher requires tileXY to be LongType
+              DataTypes.createStructField("tileX", DataTypes.IntegerType, false),
+              DataTypes.createStructField("tileY", DataTypes.IntegerType, false),
+              DataTypes.createStructField("pixelX", DataTypes.IntegerType, false),
+              DataTypes.createStructField("pixelY", DataTypes.IntegerType, false)
+            }));
+    spark.udf().register("collectToTiles", new TileXYUDF(), pixelAddresses);
+
     spark
         .sparkContext()
         .setJobDescription("Projecting data for zoom " + zoom + "  with threshold >= " + threshold);
     spark.sql("DROP TABLE IF EXISTS map_projected_" + zoom);
+    // SQL written and optimised for Spark 2.3 using available UDFs.
+    // Further optimisations should be explored for Spark 3.x+ (hint: aggregation functions)
     spark.sql(
-        "CREATE TABLE map_projected_"
-            + zoom
-            + "  STORED AS parquet AS "
-            + "SELECT "
-            + "  mapKey, zxy.z, zxy.x, zxy.y, collect_list(map(borYear,occCount)) as data "
-            + "FROM ("
-            + "  SELECT "
-            + "  /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
-            + "  m.mapKey, project("
-            + zoom
-            + ", lat, lng) AS zxy, m.borYear, sum(m.occCount) AS occCount   "
-            + "  FROM map_input m "
-            + "  JOIN map_stats s ON m.mapKey = s.mapKey " // filters to maps above threshold
-            + "  GROUP BY m.mapKey, zxy, m.borYear"
-            + ") t "
-            + "GROUP BY mapKey, zxy.z, zxy.x, zxy.y");
+        String.format(
+            "CREATE TABLE map_projected_%d STORED AS parquet AS "
+
+                // groups the data onto tiles, with local addressing
+                + "SELECT mapKey, tile, features "
+                + "FROM ("
+
+                //   Collects the counts at the global XY adding tile coordinates
+                + "  SELECT mapKey, zxy, collect_list(borYearCount) as features "
+                + "  FROM ("
+
+                //     Filters the input, projects to globalXY and accumulates counts by bor+year
+                + "    SELECT /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
+                + "      m.mapKey, "
+                + "      project(%d, lat, lng) AS zxy, "
+                + "      struct(m.borYear, sum(m.occCount) AS occCount) AS borYearCount "
+                + "    FROM "
+                + "      map_input m "
+                + "      JOIN map_stats s ON m.mapKey = s.mapKey " // filters to maps above threshold
+                + "    WHERE zxy.z IS NOT NULL AND zxy.x IS NOT NULL AND zxy.y IS NOT NULL"
+                + "    GROUP BY m.mapKey, zxy, m.borYear "
+
+                + "  ) t "
+                + "GROUP BY mapKey, zxy"
+                + ") f "
+                + "LATERAL VIEW explode(collectToTiles(zxy.z, zxy.x, zxy.y)) t AS tile",
+            zoom, zoom));
   }
 
   /**
@@ -88,38 +110,41 @@ public class SparkMapApp {
     spark.sparkContext().setJobDescription("Reading input data");
     spark.udf().register("encodeBorYear", new EncodeBorYearUDF(), DataTypes.IntegerType);
     spark.sql(
-        "CREATE TABLE IF NOT EXISTS map_input STORED AS parquet AS "
-            + "SELECT "
-            + "  mapKey, "
-            + "  decimalLatitude AS lat, "
-            + "  decimalLongitude AS lng, "
-            + "  encodeBorYear(basisOfRecord, year) AS borYear, "
-            + "  count(*) AS occCount "
-            + "FROM "
-            + source
-            + " "
-            + "LATERAL VIEW explode(  "
-            + "  mapKeys("
-            + "    kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
-            + "    datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
-            + "  ) "
-            + ") m AS mapKey "
-            + "WHERE "
-            + "  decimalLatitude BETWEEN -90 AND 90 AND "
-            + "  decimalLongitude IS NOT NULL AND "
-            + "  hasGeospatialIssues = false AND "
-            + "  occurrenceStatus='PRESENT' " // AND phylumKey=35
-            + "GROUP BY mapKey, lat, lng, borYear");
+        String.format(
+            "CREATE TABLE IF NOT EXISTS map_input STORED AS parquet AS "
+                + "SELECT "
+                + "  mapKey, "
+                + "  decimalLatitude AS lat, "
+                + "  decimalLongitude AS lng, "
+                + "  encodeBorYear(basisOfRecord, year) AS borYear, " // TODO: test performance as a
+                // struct()
+                + "  count(*) AS occCount "
+                + "FROM "
+                + "  %s "
+                + "  LATERAL VIEW explode(  "
+                + "    mapKeys("
+                + "      kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
+                + "      datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
+                + "    ) "
+                + "  ) m AS mapKey "
+                + "WHERE "
+                + "  decimalLatitude BETWEEN -90 AND 90 AND "
+                + "  decimalLongitude IS NOT NULL AND "
+                + "  hasGeospatialIssues = false AND "
+                + "  occurrenceStatus='PRESENT' " // AND phylumKey=35
+                + "GROUP BY mapKey, lat, lng, borYear",
+            source));
 
     // Generating and broadcasting a stats table proves much faster than a windowing function and is
     // simpler to grok
     spark.sparkContext().setJobDescription("Creating stats on input");
     spark.sql(
-        "CREATE TABLE IF NOT EXISTS map_stats STORED AS PARQUET AS "
-            + "SELECT mapKey, count(*) AS total "
-            + "FROM map_input "
-            + "GROUP BY mapKey "
-            + "HAVING count(*) > "
-            + threshold);
+        String.format(
+            "CREATE TABLE IF NOT EXISTS map_stats STORED AS PARQUET AS "
+                + "SELECT mapKey, count(*) AS total "
+                + "FROM map_input "
+                + "GROUP BY mapKey "
+                + "HAVING count(*) >= %d",
+            threshold));
   }
 }

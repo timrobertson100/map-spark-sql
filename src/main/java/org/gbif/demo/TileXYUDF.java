@@ -25,8 +25,8 @@ import org.apache.spark.sql.api.java.UDF3;
 
 import com.google.common.collect.Lists;
 
-/** Returns the addresses ... todo document when ready */
-public class TilePixelUDF implements UDF3<Integer, Double, Double, Row[]>, Serializable {
+/** Returns the tiles addresses for the given global coordinate */
+public class TileXYUDF implements UDF3<Integer, Long, Long, Row[]>, Serializable {
   static final int TILE_SIZE = 512;
   static final int BUFFER_SIZE = TILE_SIZE / 16;
   static final TileProjection projection =
@@ -34,37 +34,35 @@ public class TilePixelUDF implements UDF3<Integer, Double, Double, Row[]>, Seria
   static final TileSchema tileSchema = TileSchema.fromSRS("EPSG:3857"); // TODO: projections
 
   @Override
-  public Row[] call(Integer zoom, Double lat, Double lng) {
-    if (projection.isPlottable(lat, lng)) {
-      Double2D globalXY = projection.toGlobalPixelXY(lat, lng, zoom);
+  public Row[] call(Integer zoom, Long x, Long y) {
 
-      List<String> addresses = Lists.newArrayList();
+    Double2D globalXY = new Double2D(x, y);
 
-      Long2D tileXY = Tiles.toTileXY(globalXY, tileSchema, zoom, TILE_SIZE);
-      Long2D localXY =
-          Tiles.toTileLocalXY(
-              globalXY, tileSchema, zoom, tileXY.getX(), tileXY.getY(), TILE_SIZE, BUFFER_SIZE);
-      append(addresses, tileXY, localXY);
+    List<String> addresses = Lists.newArrayList();
 
-      // Readdress any coordinates that fall in the boundary region of adjacent tiles
-      readdressAndAppend(addresses, globalXY, tileXY, zoom, localXY.getX(), localXY.getY());
+    Long2D tileXY = Tiles.toTileXY(globalXY, tileSchema, zoom, TILE_SIZE);
+    Long2D localXY =
+        Tiles.toTileLocalXY(
+            globalXY, tileSchema, zoom, tileXY.getX(), tileXY.getY(), TILE_SIZE, BUFFER_SIZE);
+    append(addresses, tileXY, localXY);
 
-      List<Row> rows =
-          addresses.stream()
-              .map(
-                  s -> {
-                    String p[] = s.split(",");
-                    return RowFactory.create(
-                        Integer.valueOf(p[0]),
-                        Integer.valueOf(p[1]),
-                        Integer.valueOf(p[2]),
-                        Integer.valueOf(p[3]));
-                  })
-              .collect(Collectors.toList());
+    // Readdress any coordinates that fall in the boundary region of adjacent tiles
+    readdressAndAppend(addresses, globalXY, tileXY, zoom, localXY.getX(), localXY.getY());
 
-      return rows.toArray(new Row[rows.size()]);
-    }
-    return null;
+    List<Row> rows =
+        addresses.stream()
+            .map(
+                s -> {
+                  String p[] = s.split(",");
+                  return RowFactory.create(
+                      Integer.valueOf(p[0]),
+                      Integer.valueOf(p[1]),
+                      Integer.valueOf(p[2]),
+                      Integer.valueOf(p[3]));
+                })
+            .collect(Collectors.toList());
+
+    return rows.toArray(new Row[rows.size()]);
   }
 
   /**
