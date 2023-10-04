@@ -28,7 +28,7 @@ import com.google.common.collect.Lists;
 /** Returns the addresses ... todo document when ready */
 public class TilePixelUDF implements UDF3<Integer, Double, Double, Row[]>, Serializable {
   static final int TILE_SIZE = 512;
-  static final int BUFFER_SIZE = TILE_SIZE / 16;
+  static final int BUFFER_SIZE = 64;
   static final TileProjection projection =
       Tiles.fromEPSG("EPSG:3857", TILE_SIZE); // TODO: projections
   static final TileSchema tileSchema = TileSchema.fromSRS("EPSG:3857"); // TODO: projections

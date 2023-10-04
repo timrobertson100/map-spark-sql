@@ -13,9 +13,18 @@
  */
 package org.gbif.demo;
 
+import org.gbif.maps.common.hbase.ModulusSalt;
+
+import org.apache.spark.Partitioner;
 import org.apache.spark.SparkConf;
+import org.apache.spark.api.java.JavaPairRDD;
+import org.apache.spark.api.java.function.PairFunction;
+import org.apache.spark.sql.Dataset;
+import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.types.*;
+
+import scala.Tuple2;
 
 public class SparkMapApp {
   public static void main(String[] args) {
@@ -23,6 +32,7 @@ public class SparkMapApp {
     String source = args.length == 2 ? args[0] : "prod_h.occurrence";
     String targetDB = args.length == 2 ? args[1] : "tim";
     int tilePyramidThreshold = 250000;
+    ModulusSalt salter = new ModulusSalt(100);
 
     SparkSession spark =
         SparkSession.builder().appName("SparkMapTest").enableHiveSupport().getOrCreate();
@@ -31,48 +41,58 @@ public class SparkMapApp {
     conf.set("hive.exec.compress.output", "true"); // TODO: needed?
     spark.sql("use " + targetDB);
 
-    registerUDFs(spark);
-    // prepareInputDataToTile(spark, source, tilePyramidThreshold);
+    registerUDFs(spark, salter);
+    prepareInputDataToTile(spark, source, tilePyramidThreshold);
     for (int z = 16; z >= 0; z--) {
-      processZoom(spark, z);
+      processZoom(spark, z, salter);
     }
   }
 
-  private static void processZoom(SparkSession spark, int zoom) {
+  private static void processZoom(SparkSession spark, int zoom, ModulusSalt salter) {
     spark.sparkContext().setJobDescription("Processing zoom " + zoom);
 
     spark.sql("DROP TABLE IF EXISTS map_projected_" + zoom);
     // SQL written and optimised for Spark 2.3 using available UDFs.
     // Further optimisations should be explored for Spark 3.x+ (hint: aggregation functions)
-    spark.sql(
-        String.format(
-            "CREATE TABLE map_projected_%d STORED AS parquet AS "
+    Dataset<Row> tiles =
+        spark.sql(
+            String.format(
+                "CREATE TABLE map_projected_%d STORED AS parquet AS "
 
-                // groups the data onto tiles, with local addressing
-                + "SELECT mapKey, tile, features "
-                + "FROM ("
+                    // Collect into tiles with local addressing
+                    + "SELECT "
+                    + "  hbaseKey(mapKey, zxy.z, tile.tileX, tile.tileY) AS key,"
+                    + "  struct(tile.pixelX AS x, tile.pixelY AS y, features AS f) AS tile "
+                    + "FROM ("
+                    //   Collects the counts into a feature collection at the global pixel
+                    + "  SELECT mapKey, zxy, collect_list(borYearCount) as features "
+                    + "  FROM ("
+                    //     Filter, project to globalXY and count at pixel by bor+year
+                    + "    SELECT "
+                    + "      /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
+                    + "      m.mapKey, "
+                    + "      project(%d, lat, lng) AS zxy, "
+                    + "      struct(m.borYear AS borYear, sum(m.occCount) AS occCount) AS borYearCount "
+                    + "    FROM "
+                    + "      map_input m "
+                    + "      JOIN map_stats s ON m.mapKey = s.mapKey " // threshold filter
+                    + "    GROUP BY m.mapKey, zxy, borYear "
+                    + "  ) t "
+                    + "GROUP BY mapKey, zxy"
+                    + ") f "
+                    + "LATERAL VIEW explode(collectToTiles(zxy.z, zxy.x, zxy.y)) t AS tile "
+                    + "WHERE zxy.z IS NOT NULL AND zxy.x IS NOT NULL AND zxy.y IS NOT NULL",
+                zoom, zoom));
 
-                //   Collects the counts at the global XY adding tile coordinates
-                + "  SELECT mapKey, zxy, collect_list(borYearCount) as features "
-                + "  FROM ("
+    Partitioner partitionBySalt = new SaltPrefixPartitioner(salter.saltCharCount());
+    JavaPairRDD<String, StructType> tiles2 =
+        tiles.toJavaRDD().mapToPair(toPair()).repartitionAndSortWithinPartitions(partitionBySalt);
 
-                //     Filters the input, projects to globalXY and accumulates counts by bor+year
-                + "    SELECT /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
-                + "      m.mapKey, "
-                + "      project(%d, lat, lng) AS zxy, "
-                + "      struct(m.borYear, sum(m.occCount) AS occCount) AS borYearCount "
-                + "    FROM "
-                + "      map_input m "
-                + "      JOIN map_stats s ON m.mapKey = s.mapKey " // filters to maps above
-                // threshold
+    System.out.println(zoom + " = " + tiles2.count());
+  }
 
-                + "    GROUP BY m.mapKey, zxy, m.borYear "
-                + "  ) t "
-                + "GROUP BY mapKey, zxy"
-                + ") f "
-                + "LATERAL VIEW explode(collectToTiles(zxy.z, zxy.x, zxy.y)) t AS tile "
-                + "WHERE zxy.z IS NOT NULL AND zxy.x IS NOT NULL AND zxy.y IS NOT NULL",
-            zoom, zoom));
+  static PairFunction toPair() {
+    return (PairFunction<Row, String, StructType>) row -> new Tuple2<>(row.getAs(0), row.getAs(1));
   }
 
   /**
@@ -91,13 +111,12 @@ public class SparkMapApp {
                 + "  mapKey, "
                 + "  decimalLatitude AS lat, "
                 + "  decimalLongitude AS lng, "
-                + "  encodeBorYear(basisOfRecord, year) AS borYear, " // TODO: performance as a
-                // struct()?
+                + "  encodeBorYear(basisOfRecord, year) AS borYear, " // improves performance
                 + "  count(*) AS occCount "
                 + "FROM "
                 + "  %s "
                 + "  LATERAL VIEW explode(  "
-                + "    mapKeys(" // TODO: performance as a collect_set?
+                + "    mapKeys("
                 + "      kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
                 + "      datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
                 + "    ) "
@@ -106,7 +125,7 @@ public class SparkMapApp {
                 + "  decimalLatitude BETWEEN -90 AND 90 AND "
                 + "  decimalLongitude IS NOT NULL AND "
                 + "  hasGeospatialIssues = false AND "
-                + "  occurrenceStatus='PRESENT' " // AND phylumKey=35
+                + "  occurrenceStatus='PRESENT' " // AND phylumKey=35 "
                 + "GROUP BY mapKey, lat, lng, borYear",
             source));
 
@@ -122,7 +141,7 @@ public class SparkMapApp {
             threshold));
   }
 
-  private static void registerUDFs(SparkSession spark) {
+  private static void registerUDFs(SparkSession spark, ModulusSalt salter) {
     spark
         .udf()
         .register("mapKeys", new MapKeysUDF(), DataTypes.createArrayType(DataTypes.StringType));
@@ -152,5 +171,7 @@ public class SparkMapApp {
                       DataTypes.createStructField("pixelX", DataTypes.IntegerType, false),
                       DataTypes.createStructField("pixelY", DataTypes.IntegerType, false)
                     })));
+
+    spark.udf().register("hbaseKey", new HBaseKeyUDF(salter), DataTypes.StringType);
   }
 }
