@@ -15,6 +15,19 @@ package org.gbif.demo;
 
 import org.gbif.maps.common.hbase.ModulusSalt;
 
+import java.io.IOException;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+
+import org.apache.hadoop.conf.Configuration;
+import org.apache.hadoop.hbase.HBaseConfiguration;
+import org.apache.hadoop.hbase.KeyValue;
+import org.apache.hadoop.hbase.client.HTable;
+import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
+import org.apache.hadoop.hbase.mapreduce.HFileOutputFormat2;
+import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.mapreduce.Job;
 import org.apache.spark.Partitioner;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
@@ -24,15 +37,23 @@ import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.types.*;
 
+import com.vividsolutions.jts.geom.Coordinate;
+import com.vividsolutions.jts.geom.GeometryFactory;
+import com.vividsolutions.jts.geom.Point;
+
+import no.ecc.vectortile.VectorTileEncoder;
 import scala.Tuple2;
 
 public class SparkMapApp {
-  public static void main(String[] args) {
+  public static void main(String[] args) throws IOException {
 
     String source = args.length == 2 ? args[0] : "prod_h.occurrence";
     String targetDB = args.length == 2 ? args[1] : "tim";
     int tilePyramidThreshold = 250000;
     ModulusSalt salter = new ModulusSalt(100);
+
+    int bufferSize = 64;
+    int tileSize = 512;
 
     SparkSession spark =
         SparkSession.builder().appName("SparkMapTest").enableHiveSupport().getOrCreate();
@@ -42,13 +63,15 @@ public class SparkMapApp {
     spark.sql("use " + targetDB);
 
     registerUDFs(spark, salter);
-    prepareInputDataToTile(spark, source, tilePyramidThreshold);
+    // prepareInputDataToTile(spark, source, tilePyramidThreshold);
     for (int z = 16; z >= 0; z--) {
-      processZoom(spark, z, salter);
+      processZoom(spark, z, tileSize, bufferSize, salter);
     }
   }
 
-  private static void processZoom(SparkSession spark, int zoom, ModulusSalt salter) {
+  private static void processZoom(
+      SparkSession spark, int zoom, int tileSize, int bufferSize, ModulusSalt salter)
+      throws IOException {
     spark.sparkContext().setJobDescription("Processing zoom " + zoom);
 
     spark.sql("DROP TABLE IF EXISTS map_projected_" + zoom);
@@ -57,12 +80,14 @@ public class SparkMapApp {
     Dataset<Row> tiles =
         spark.sql(
             String.format(
-                "CREATE TABLE map_projected_%d STORED AS parquet AS "
+                // "CREATE TABLE map_projected_%d STORED AS parquet AS "
 
-                    // Collect into tiles with local addressing
-                    + "SELECT "
+                // Collect into tiles with local addressing
+                "SELECT "
                     + "  hbaseKey(mapKey, zxy.z, tile.tileX, tile.tileY) AS key,"
-                    + "  struct(tile.pixelX AS x, tile.pixelY AS y, features AS f) AS tile "
+                    + "  collect_list("
+                    + "      struct(tile.pixelX AS x, tile.pixelY AS y, features AS f)"
+                    + "  ) AS tile "
                     + "FROM ("
                     //   Collects the counts into a feature collection at the global pixel
                     + "  SELECT mapKey, zxy, collect_list(borYearCount) as features "
@@ -78,21 +103,88 @@ public class SparkMapApp {
                     + "      JOIN map_stats s ON m.mapKey = s.mapKey " // threshold filter
                     + "    GROUP BY m.mapKey, zxy, borYear "
                     + "  ) t "
-                    + "GROUP BY mapKey, zxy"
+                    + "  WHERE zxy IS NOT NULL "
+                    + "  GROUP BY mapKey, zxy"
                     + ") f "
                     + "LATERAL VIEW explode(collectToTiles(zxy.z, zxy.x, zxy.y)) t AS tile "
-                    + "WHERE zxy.z IS NOT NULL AND zxy.x IS NOT NULL AND zxy.y IS NOT NULL",
-                zoom, zoom));
+                    + "GROUP BY key",
+                // + "WHERE zxy.z IS NOT NULL AND zxy.x IS NOT NULL AND zxy.y IS NOT NULL",
+                zoom));
 
+    // Create the vector tiles, and prepare partitions for HFiles
+    GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
     Partitioner partitionBySalt = new SaltPrefixPartitioner(salter.saltCharCount());
-    JavaPairRDD<String, StructType> tiles2 =
-        tiles.toJavaRDD().mapToPair(toPair()).repartitionAndSortWithinPartitions(partitionBySalt);
+    JavaPairRDD<String, byte[]> partitioned =
+        tiles
+            .toJavaRDD()
+            .mapToPair(
+                (PairFunction<Row, String, byte[]>)
+                    r -> {
+                      VectorTileEncoder encoder =
+                          new VectorTileEncoder(tileSize, bufferSize, false);
+                      String saltedKey = r.getString(0);
+                      List<Row> tileData = r.getList(1);
+                      for (Row pixel : tileData) {
+                        int x = pixel.getAs("x");
+                        int y = pixel.getAs("y");
+                        int i = pixel.fieldIndex("f"); // TODO: just use 2?
+                        List<Row> features = pixel.getList(i);
 
-    System.out.println(zoom + " = " + tiles2.count());
-  }
+                        Point point = GEOMETRY_FACTORY.createPoint(new Coordinate(x, y));
 
-  static PairFunction toPair() {
-    return (PairFunction<Row, String, StructType>) row -> new Tuple2<>(row.getAs(0), row.getAs(1));
+                        Map<String, Map<String, Long>> target = new HashMap<>();
+                        for (Row encoded : features) {
+                          String bor = EncodeBorYearUDF.bor(encoded.getAs("borYear"));
+                          int year = EncodeBorYearUDF.year(encoded.getAs("borYear"));
+                          long count = encoded.getAs("occCount");
+                          Map<String, Long> yearCounts = target.getOrDefault(bor, new HashMap<>());
+                          yearCounts.put(String.valueOf(year), count);
+                          if (!target.containsKey(bor)) target.put(bor, yearCounts);
+                        }
+
+                        for (String bor : target.keySet()) {
+                          encoder.addFeature(bor, target.get(bor), point);
+                        }
+                      }
+
+                      byte[] mvt = encoder.encode();
+                      return new Tuple2<>(saltedKey, mvt);
+                    })
+            .repartitionAndSortWithinPartitions(partitionBySalt);
+
+    Configuration conf = HBaseConfiguration.create();
+    conf.set(
+        "hbase.zookeeper.quorum", "c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181");
+    // NOTE: job creates a copy of the conf
+    Job job = new Job(conf, "Map tile build"); // name not actually used since we don't submit MR
+    HTable table = new HTable(conf, "tim");
+    HFileOutputFormat2.configureIncrementalLoad(job, table);
+    conf = job.getConfiguration();
+
+    partitioned
+        .mapToPair(
+            (PairFunction<Tuple2<String, byte[]>, ImmutableBytesWritable, KeyValue>)
+                kvp -> {
+                  byte[] saltedRowKey = Bytes.toBytes(kvp._1);
+                  byte[] mvt = kvp._2;
+
+                  ImmutableBytesWritable key = new ImmutableBytesWritable(saltedRowKey);
+                  // TODO projection support
+                  KeyValue row =
+                      new KeyValue(
+                          saltedRowKey,
+                          Bytes.toBytes(
+                              "EPSG:3857".replaceAll(":", "_")), // column family (e.g. epsg_4326)
+                          Bytes.toBytes("tile"),
+                          mvt);
+                  return new Tuple2<>(key, row);
+                })
+        .saveAsNewAPIHadoopFile(
+            "/tmp/tim/EPSG_3857/z" + zoom,
+            ImmutableBytesWritable.class,
+            KeyValue.class,
+            HFileOutputFormat2.class,
+            conf);
   }
 
   /**
@@ -125,7 +217,7 @@ public class SparkMapApp {
                 + "  decimalLatitude BETWEEN -90 AND 90 AND "
                 + "  decimalLongitude IS NOT NULL AND "
                 + "  hasGeospatialIssues = false AND "
-                + "  occurrenceStatus='PRESENT' " // AND phylumKey=35 "
+                + "  occurrenceStatus='PRESENT' AND phylumKey=35 "
                 + "GROUP BY mapKey, lat, lng, borYear",
             source));
 

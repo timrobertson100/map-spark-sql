@@ -14,6 +14,8 @@
     <properties>
         <spark.version>2.3.0</spark.version>
         <scala.binary.version>2.11</scala.binary.version>
+        <hadoop.version>2.6.0-cdh5.12.0</hadoop.version>
+        <hbase.version>1.2.0-cdh5.12.0</hbase.version>
         <gbif.maps.version>0.36.1</gbif.maps.version>
         <lombok.version>1.18.30</lombok.version>
         <java.version>1.8</java.version>
@@ -42,6 +44,60 @@
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hadoop</groupId>
+            <artifactId>hadoop-common</artifactId>
+            <version>${hadoop.version}</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.apache.hbase</groupId>
+            <artifactId>hbase-client</artifactId>
+            <version>${hbase.version}</version>
+            <exclusions>
+                <!--
+                  This is excluded since it stops the MRAppMaster in Oozie from even starting (when in Oozie).
+                -->
+                <exclusion>
+                    <groupId>org.apache.hadoop</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <!--
+                  Breaks spark2
+                -->
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+            </exclusions>
+        </dependency>
+
+        <dependency>
+            <groupId>org.apache.hbase</groupId>
+            <artifactId>hbase-server</artifactId>
+            <version>${hbase.version}</version>
+            <!--
+              This is excluded since it stops the MRAppMaster in Oozie from even starting (when in Oozie).
+             -->
+            <exclusions>
+                <exclusion>
+                    <groupId>org.apache.hadoop</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <exclusion>
+                    <groupId>org.mortbay.jetty</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+                <!--
+                  Breaks spark2
+                -->
+                <exclusion>
+                    <groupId>io.netty</groupId>
+                    <artifactId>*</artifactId>
+                </exclusion>
+
+            </exclusions>
         </dependency>
     </dependencies>
 
