@@ -75,13 +75,13 @@ public class TileXYUDF implements UDF3<Integer, Long, Long, Row[]>, Serializable
     // What follows needs tests and explained. A quick hack that doesn't deal with date lines
 
     if (zoom > 0) {
-      if (y <= BUFFER_SIZE) {
+      if (y < BUFFER_SIZE) {
         // N
         Long2D newTileXY = new Long2D(tileXY.getX(), tileXY.getY() - 1);
         appendOnTile(target, globalXY, zoom, newTileXY);
 
         // NW
-        if (x <= BUFFER_SIZE) {
+        if (x < BUFFER_SIZE) {
           newTileXY = new Long2D(tileXY.getX() - 1, tileXY.getY() - 1);
           appendOnTile(target, globalXY, zoom, newTileXY);
         }
@@ -102,7 +102,7 @@ public class TileXYUDF implements UDF3<Integer, Long, Long, Row[]>, Serializable
         Long2D newTileXY = new Long2D(tileXY.getX(), tileXY.getY() + 1);
         appendOnTile(target, globalXY, zoom, newTileXY);
 
-        if (x <= BUFFER_SIZE) {
+        if (x < BUFFER_SIZE) {
           // SW
           newTileXY = new Long2D(tileXY.getX() - 1, tileXY.getY() + 1);
           appendOnTile(target, globalXY, zoom, newTileXY);
@@ -113,7 +113,7 @@ public class TileXYUDF implements UDF3<Integer, Long, Long, Row[]>, Serializable
           appendOnTile(target, globalXY, zoom, newTileXY);
         }
       }
-      if (x <= BUFFER_SIZE) {
+      if (x < BUFFER_SIZE) {
         // W
         Long2D newTileXY = new Long2D(tileXY.getX() - 1, tileXY.getY());
         appendOnTile(target, globalXY, zoom, newTileXY);

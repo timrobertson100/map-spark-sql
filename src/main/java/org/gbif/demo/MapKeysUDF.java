@@ -16,6 +16,8 @@ package org.gbif.demo;
 import org.gbif.maps.common.projection.*;
 
 import java.io.Serializable;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Set;
 
 import org.apache.spark.sql.api.java.UDF13;
@@ -43,6 +45,21 @@ public class MapKeysUDF
             WrappedArray<String>,
             String[]>,
         Serializable {
+
+  // Maintain backwards compatible keys
+  private static final Map<String, Integer> MAPS_TYPES =
+      new HashMap<String, Integer>() {
+        {
+          put("ALL", 0);
+          put("TAXON", 1);
+          put("DATASET", 2);
+          put("PUBLISHER", 3);
+          put("COUNTRY", 4);
+          put("PUBLISHING_COUNTRY", 5);
+          put("NETWORK", 6);
+        }
+      };
+
   @Override
   public String[] call(
       Integer kingdomKey,
@@ -58,7 +75,9 @@ public class MapKeysUDF
       String countryCode,
       String publishingCountry,
       WrappedArray<String> networkKeys) {
-    Set<String> keys = Sets.newHashSet("ALL:0");
+
+    Set<String> keys = Sets.newHashSet();
+    appendNonNull(keys, "ALL", 0);
     appendNonNull(keys, "TAXON", kingdomKey);
     appendNonNull(keys, "TAXON", phylumKey);
     appendNonNull(keys, "TAXON", classKey);
@@ -80,6 +99,6 @@ public class MapKeysUDF
   }
 
   static void appendNonNull(Set<String> target, String prefix, Object l) {
-    if (l != null) target.add(prefix + ":" + l);
+    if (l != null) target.add(MAPS_TYPES.get(prefix) + ":" + l);
   }
 }

@@ -35,7 +35,8 @@ import org.apache.spark.api.java.function.PairFunction;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
-import org.apache.spark.sql.types.*;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
 
 import com.vividsolutions.jts.geom.Coordinate;
 import com.vividsolutions.jts.geom.GeometryFactory;
@@ -44,7 +45,7 @@ import com.vividsolutions.jts.geom.Point;
 import no.ecc.vectortile.VectorTileEncoder;
 import scala.Tuple2;
 
-public class SparkMapApp {
+public class SparkMapAppTODO {
   public static void main(String[] args) throws IOException {
 
     String source = args.length == 2 ? args[0] : "prod_h.occurrence";
@@ -111,7 +112,92 @@ public class SparkMapApp {
                 // + "WHERE zxy.z IS NOT NULL AND zxy.x IS NOT NULL AND zxy.y IS NOT NULL",
                 zoom));
 
+    // project to globalpixel address
+    Dataset<Row> t1 =
+        spark.sql(
+            String.format(
+                "      SELECT "
+                    + "  /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
+                    + "  m.mapKey, "
+                    + "  project(%d, lat, lng) AS zxy, "
+                    + "  struct(borYear AS borYear, sum(occCount) AS occCount) AS borYearCount "
+                    + "FROM "
+                    + "  map_input m "
+                    + "  JOIN map_stats s ON m.mapKey = s.mapKey " // threshold filter
+                    + "GROUP BY m.mapKey, zxy, borYear",
+                zoom));
+    t1.createOrReplaceTempView("t1");
+
+    // collect counts into a feature at the global pixel address
+    Dataset<Row> t2 =
+        spark.sql(
+            "SELECT mapKey, zxy, collect_list(borYearCount) as features"
+                + "  FROM t1 "
+                + "  WHERE zxy IS NOT NULL"
+                + "  GROUP BY mapKey, zxy");
+    t2.createOrReplaceTempView("t2");
+
+    // readdress pixels onto tiles noting that addresses in buffer zones fall on multiple tiles
+    Dataset<Row> t3 =
+        spark.sql(
+            "SELECT "
+                + "    hbaseKey(mapKey, zxy.z, tile.tileX, tile.tileY) AS key,"
+                + "    collect_list("
+                + "      struct(tile.pixelX AS x, tile.pixelY AS y, features AS f)"
+                + "    ) AS tile "
+                + "  FROM "
+                + "    t2 "
+                + "    LATERAL VIEW explode("
+                + "      collectToTiles(zxy.z, zxy.x, zxy.y)" // readdresses global pixels
+                + "    ) t AS tile "
+                + "  GROUP BY key");
+    t3.createOrReplaceTempView("t3");
+
+    // generate the vector tiles
+    Dataset<Row> t4 = spark.sql("SELECT key, mvt(tile) AS mvt FROM t3");
+
+    // repartition into HBase regions
     Partitioner partitionBySalt = new SaltPrefixPartitioner(salter.saltCharCount());
+    JavaPairRDD t5 =
+        t4.javaRDD()
+            .mapToPair(r -> new Tuple2<>(r.get(0), r.get(1)))
+            .repartitionAndSortWithinPartitions(partitionBySalt);
+
+    // write HFiles
+    Configuration conf = HBaseConfiguration.create();
+    conf.set(
+        "hbase.zookeeper.quorum", "c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181");
+    // NOTE: job creates a copy of the conf
+    Job job = new Job(conf, "Map tile build"); // name not actually used since we don't submit MR
+    HTable table = new HTable(conf, "tim");
+    HFileOutputFormat2.configureIncrementalLoad(job, table);
+    conf = job.getConfiguration();
+
+    t5.mapToPair(
+        (PairFunction<Tuple2<String, byte[]>, ImmutableBytesWritable, KeyValue>)
+            kvp -> {
+              byte[] saltedRowKey = Bytes.toBytes(kvp._1);
+              byte[] mvt = kvp._2;
+
+              ImmutableBytesWritable key = new ImmutableBytesWritable(saltedRowKey);
+              // TODO projection support
+              KeyValue row =
+                  new KeyValue(
+                      saltedRowKey,
+                      Bytes.toBytes(
+                          "EPSG:3857".replaceAll(":", "_")), // column family (e.g. epsg_4326)
+                      Bytes.toBytes("tile"),
+                      mvt);
+              return new Tuple2<>(key, row);
+            });
+    /*
+    .saveAsNewAPIHadoopFile(
+        "/tmp/tim/EPSG_3857/z" + zoom,
+        ImmutableBytesWritable.class,
+        KeyValue.class,
+        HFileOutputFormat2.class,
+        conf);
+    */
 
     // Create the vector tiles, and prepare partitions for HFiles
     GeometryFactory GEOMETRY_FACTORY = new GeometryFactory();
@@ -152,15 +238,6 @@ public class SparkMapApp {
                       return new Tuple2<>(saltedKey, mvt);
                     })
             .repartitionAndSortWithinPartitions(partitionBySalt);
-
-    Configuration conf = HBaseConfiguration.create();
-    conf.set(
-        "hbase.zookeeper.quorum", "c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181");
-    // NOTE: job creates a copy of the conf
-    Job job = new Job(conf, "Map tile build"); // name not actually used since we don't submit MR
-    HTable table = new HTable(conf, "tim");
-    HFileOutputFormat2.configureIncrementalLoad(job, table);
-    conf = job.getConfiguration();
 
     partitioned
         .mapToPair(
@@ -218,7 +295,7 @@ public class SparkMapApp {
                 + "  decimalLatitude BETWEEN -90 AND 90 AND "
                 + "  decimalLongitude IS NOT NULL AND "
                 + "  hasGeospatialIssues = false AND "
-                + "  occurrenceStatus='PRESENT' " // AND phylumKey=35 "
+                + "  occurrenceStatus='PRESENT' AND phylumKey=35 "
                 + "GROUP BY mapKey, lat, lng, borYear",
             source));
 

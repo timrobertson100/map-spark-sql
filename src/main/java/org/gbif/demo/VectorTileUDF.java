@@ -13,27 +13,16 @@
  */
 package org.gbif.demo;
 
-import org.gbif.maps.common.hbase.ModulusSalt;
+import java.io.Serializable;
 
-import org.apache.spark.Partitioner;
+import org.apache.spark.sql.Row;
+import org.apache.spark.sql.api.java.UDF1;
 
-/**
- * Partitions by the salt prefix on the given key (which aligns to HBase regions).
- */
-public class SaltPrefixPartitioner extends Partitioner {
-  final int numPartitions;
-
-  public SaltPrefixPartitioner(int saltLength) {
-    numPartitions = new Double(Math.pow(10, saltLength)).intValue();
-  }
+/** Generates a vector tile from the structured input */
+public class VectorTileUDF implements UDF1<Row, byte[]>, Serializable {
 
   @Override
-  public int getPartition(Object key) {
-    return ModulusSalt.saltFrom(key.toString());
-  }
-
-  @Override
-  public int numPartitions() {
-    return numPartitions;
+  public byte[] call(Row tileData) {
+    return null;
   }
 }
