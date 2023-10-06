@@ -17,6 +17,8 @@
         <hadoop.version>2.6.0-cdh5.12.0</hadoop.version>
         <hbase.version>1.2.0-cdh5.12.0</hbase.version>
         <gbif.maps.version>0.36.1</gbif.maps.version>
+        <!-- fixed to gbif/maps for geotools -->
+        <hsqldb.version>2.4.1</hsqldb.version>
         <lombok.version>1.18.30</lombok.version>
         <java.version>1.8</java.version>
     </properties>
@@ -26,6 +28,11 @@
             <groupId>org.gbif.maps</groupId>
             <artifactId>common</artifactId>
             <version>${gbif.maps.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.hsqldb</groupId>
+            <artifactId>hsqldb</artifactId>
+            <version>${hsqldb.version}</version>
         </dependency>
         <dependency>
             <groupId>org.projectlombok</groupId>
@@ -115,6 +122,13 @@
                         </goals>
                         <configuration>
                             <finalName>${project.artifactId}-${project.version}-${spark.version}</finalName>
+                            <relocations>
+                                <!-- Collision from the geotools -->
+                                <relocation>
+                                    <pattern>org.hsqldb</pattern>
+                                    <shadedPattern>shared.org.hsqldb</shadedPattern>
+                                </relocation>
+                            </relocations>
                         </configuration>
                     </execution>
                 </executions>

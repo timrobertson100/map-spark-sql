@@ -38,43 +38,64 @@ import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 
+import lombok.AllArgsConstructor;
 import scala.Tuple2;
 
-public class SparkMapApp {
+@AllArgsConstructor
+public class TilePyramid {
+  private final String source;
+  private final String hiveDB;
+  private final String zkQuorum;
+  private final String targetTable;
+  private final int modulo;
+  private final String targetDir;
+  private final int threshold;
+  private final int tileSize;
+  private final int bufferSize;
+  private final int maxZoom;
+
   public static void main(String[] args) throws IOException {
+    TilePyramid driver =
+        new TilePyramid(
+            "prod_h.occurrence",
+            "tim",
+            "c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181",
+            "tim",
+            100,
+            "/tmp/tim",
+            250000,
+            512,
+            64,
+            16);
+    driver.run();
+  }
 
-    String source = args.length == 2 ? args[0] : "prod_h.occurrence";
-    String hiveDB = args.length == 2 ? args[1] : "tim"; // where to store processed input
-    String targetTable = "tim";
-    String targetDir = "/tmp/tim/";
-    int tilePyramidThreshold = 250000;
-    ModulusSalt salter = new ModulusSalt(100);
-    int bufferSize = 64;
-    int tileSize = 512;
-    String epsg = "EPSG:3857";
-    String zkQuorum = "c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181";
-
+  private void run() throws IOException {
     SparkSession spark =
         SparkSession.builder().appName("SparkMapTest").enableHiveSupport().getOrCreate();
     SparkConf conf = spark.sparkContext().conf();
     conf.set("hive.exec.compress.output", "true");
     spark.sql("use " + hiveDB);
 
-    spark.sparkContext().setJobDescription("Reading input data");
-    prepareInput(spark, source, tilePyramidThreshold);
-    // prepareInput(spark, source, tilePyramidThreshold, "phylumKey=35");
-    for (int z = 16; z >= 0; z--) { // slowest first
+    runProjection(spark, "EPSG:3857", null);
+    runProjection(spark, "EPSG:4326", null);
+    runProjection(spark, "EPSG:3575", "decimalLatitude>=-1"); // 100km buffer
+    runProjection(spark, "EPSG:3031", "decimalLatitude<=1"); // 100km buffer
+  }
+
+  /** Runs the tile pyramid build for the projection */
+  private void runProjection(SparkSession spark, String epsg, String filter) throws IOException {
+    spark.sparkContext().setJobDescription("Reading input data for " + epsg);
+    prepareInput(spark, filter);
+
+    for (int z = maxZoom; z >= 0; z--) { // slowest first
       spark.sparkContext().setJobDescription("Processing zoom " + z);
       String dir = targetDir + epsg.replaceAll(":", "_") + "/z" + z;
 
-      Dataset<Row> tileData = createTiles(spark, epsg, z, tileSize, bufferSize, salter);
-      JavaPairRDD<String, byte[]> vectorTiles = generateMVTs(tileData, tileSize, bufferSize);
-      writeHFiles(vectorTiles, dir, zkQuorum, targetTable, salter, epsg);
+      Dataset<Row> tileData = createTiles(spark, epsg, z);
+      JavaPairRDD<String, byte[]> vectorTiles = generateMVTs(tileData);
+      writeHFiles(vectorTiles, epsg);
     }
-  }
-
-  private static void prepareInput(SparkSession spark, String source, int threshold) {
-    prepareInput(spark, source, threshold, null);
   }
 
   /**
@@ -85,18 +106,15 @@ public class SparkMapApp {
    * optimise filtering of data. Optionally, a WHERE clause can be provided to improve performance
    * on some projections ("lat>0") or to speed up experiments.
    */
-  private static void prepareInput(SparkSession spark, String source, int threshold, String where) {
-    spark.sql("DROP TABLE IF EXISTS map_input");
-    spark.sql("DROP TABLE IF EXISTS map_stats");
-
+  private void prepareInput(SparkSession spark, String filter) {
     MapKeysUDF.register(spark, "mapKeys");
     EncodeBorYearUDF.register(spark, "encodeBorYear");
 
-    String filter = where != null ? String.format(" AND %s ", where) : "";
-
+    String where = filter != null ? String.format(" AND %s ", filter) : "";
+    spark.sql("DROP TABLE IF EXISTS map_input");
     spark.sql(
         String.format(
-            "CREATE TABLE IF NOT EXISTS map_input STORED AS parquet AS "
+            "CREATE TABLE map_input STORED AS parquet AS "
                 + "SELECT "
                 + "  mapKey, "
                 + "  decimalLatitude AS lat, "
@@ -112,15 +130,16 @@ public class SparkMapApp {
                 + "    ) "
                 + "  ) m AS mapKey "
                 + "WHERE "
-                + "  decimalLatitude BETWEEN -90 AND 90 AND "
+                + "  decimalLatitude IS NOT NULL AND "
                 + "  decimalLongitude IS NOT NULL AND "
                 + "  hasGeospatialIssues = false AND "
                 + "  occurrenceStatus='PRESENT' %s"
                 + "GROUP BY mapKey, lat, lng, borYear",
-            source, filter));
+            source, where));
 
     // Broadcasting a stats table proves faster than a windowing function and is simpler to grok
     spark.sparkContext().setJobDescription("Creating input stats using threshold of " + threshold);
+    spark.sql("DROP TABLE IF EXISTS map_stats");
     spark.sql(
         String.format(
             "CREATE TABLE IF NOT EXISTS map_stats STORED AS PARQUET AS "
@@ -137,8 +156,7 @@ public class SparkMapApp {
    * the pixels into tiles noting that a pixel can fall on a tile and in a buffer of an adjacent
    * tile, and then finally encodes the data into an MVT for the tile.
    */
-  private static Dataset<Row> createTiles(
-      SparkSession spark, String epsg, int zoom, int tileSize, int bufferSize, ModulusSalt salter) {
+  private Dataset<Row> createTiles(SparkSession spark, String epsg, int zoom) {
 
     // filter input and project to global pixel address
     GlobalPixelUDF.register(spark, "project", epsg, tileSize);
@@ -167,6 +185,7 @@ public class SparkMapApp {
     t2.createOrReplaceTempView("t2");
 
     // readdress pixels onto tiles noting that addresses in buffer zones fall on multiple tiles
+    ModulusSalt salter = new ModulusSalt(modulo);
     HBaseKeyUDF.register(spark, "hbaseKey", salter);
     TileXYUDF.register(spark, "collectToTiles", epsg, tileSize, bufferSize);
     Dataset<Row> t3 =
@@ -187,10 +206,10 @@ public class SparkMapApp {
   }
 
   /**
-   * Generates the Vector Tiles for the provided data. A UDF is avoided here as it proved slower due to the unwrapping of the scala wrapper around the byte[].
+   * Generates the Vector Tiles for the provided data. A UDF is avoided here as it proved slower due
+   * to the unwrapping of the scala wrapper around the byte[].
    */
-  private static JavaPairRDD<String, byte[]> generateMVTs(
-      Dataset<Row> source, int tileSize, int bufferSize) {
+  private JavaPairRDD<String, byte[]> generateMVTs(Dataset<Row> source) {
     VectorTiles vectorTiles = new VectorTiles(tileSize, bufferSize);
     return source
         .toJavaRDD()
@@ -209,17 +228,10 @@ public class SparkMapApp {
    * partitions the data using the modulus of the prefix salt to match the target regions, sorts
    * within the partitions and then creates the HFiles.
    */
-  private static void writeHFiles(
-      JavaPairRDD<String, byte[]> mvts,
-      String targetDir,
-      String zkQuorum,
-      String table,
-      ModulusSalt salter,
-      String epsg)
-      throws IOException {
-
+  private void writeHFiles(JavaPairRDD<String, byte[]> mvts, String epsg) throws IOException {
     byte[] colFamily = Bytes.toBytes(epsg.replaceAll(":", "_"));
     byte[] col = Bytes.toBytes("tile");
+    ModulusSalt salter = new ModulusSalt(modulo);
     mvts.repartitionAndSortWithinPartitions(new SaltPrefixPartitioner(salter.saltCharCount()))
         .mapToPair(
             (PairFunction<Tuple2<String, byte[]>, ImmutableBytesWritable, KeyValue>)
@@ -235,10 +247,10 @@ public class SparkMapApp {
             ImmutableBytesWritable.class,
             KeyValue.class,
             HFileOutputFormat2.class,
-            hadoopConf(zkQuorum, table));
+            hadoopConf());
   }
 
-  private static Configuration hadoopConf(String zkQuorum, String targetTable) throws IOException {
+  private Configuration hadoopConf() throws IOException {
     Configuration conf = HBaseConfiguration.create();
     conf.set("hbase.zookeeper.quorum", zkQuorum);
     conf.set(FileOutputFormat.COMPRESS, "true");
