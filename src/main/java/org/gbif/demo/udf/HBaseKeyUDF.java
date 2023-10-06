@@ -11,20 +11,25 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
+package org.gbif.demo.udf;
 
 import org.gbif.maps.common.hbase.ModulusSalt;
 
 import java.io.Serializable;
 
+import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF4;
+import org.apache.spark.sql.types.DataTypes;
 
-/** Generates a salted HBase key for the given map tile coordinates */
+import lombok.AllArgsConstructor;
+
+/** Generates a salted HBase key for the given map tile coordinates. */
+@AllArgsConstructor
 public class HBaseKeyUDF implements UDF4<String, Integer, Integer, Integer, String>, Serializable {
   final ModulusSalt salter;
 
-  public HBaseKeyUDF(ModulusSalt s) {
-    salter = s;
+  public static void register(SparkSession spark, String name, ModulusSalt salter) {
+    spark.udf().register("hbaseKey", new HBaseKeyUDF(salter), DataTypes.StringType);
   }
 
   @Override

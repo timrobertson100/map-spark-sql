@@ -11,16 +11,16 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
-
-import org.gbif.maps.common.projection.*;
+package org.gbif.demo.udf;
 
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
+import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF13;
+import org.apache.spark.sql.types.DataTypes;
 
 import com.google.common.collect.Sets;
 
@@ -45,6 +45,10 @@ public class MapKeysUDF
             WrappedArray<String>,
             String[]>,
         Serializable {
+
+  public static void register(SparkSession spark, String name) {
+    spark.udf().register(name, new MapKeysUDF(), DataTypes.createArrayType(DataTypes.StringType));
+  }
 
   // Maintain backwards compatible keys
   private static final Map<String, Integer> MAPS_TYPES =

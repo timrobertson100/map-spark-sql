@@ -11,21 +11,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
-
-import org.gbif.maps.common.projection.*;
+package org.gbif.demo.udf;
 
 import java.io.Serializable;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF2;
+import org.apache.spark.sql.types.DataTypes;
 
-/** Encode a BOR + year into an INT */
+/**
+ * Encode basisOfRecord and year into an int which improves performance during aggregations across
+ * large datasets considerably.
+ */
 public class EncodeBorYearUDF implements UDF2<String, Integer, Integer>, Serializable {
 
   private static final Map<String, Integer> BOR_MAPPING = new HashMap<>();
-
   private static final Map<Integer, String> BOR_MAPPING_REVERSE = new HashMap<>();
 
   static {
@@ -44,6 +46,10 @@ public class EncodeBorYearUDF implements UDF2<String, Integer, Integer>, Seriali
     }
   }
 
+  public static void register(SparkSession spark, String name) {
+    spark.udf().register(name, new EncodeBorYearUDF(), DataTypes.IntegerType);
+  }
+
   @Override
   public Integer call(String bor, Integer year) {
     return encode(bor, year);
@@ -55,11 +61,12 @@ public class EncodeBorYearUDF implements UDF2<String, Integer, Integer>, Seriali
     return (y * 100) + b;
   }
 
-  static Integer year(int encoded) {
-    return Math.max(encoded / 100, 0);
+  public static Integer year(int encoded) {
+    int year = Math.max(encoded / 100, 0);
+    return year > 0 ? year : null;
   }
 
-  static String bor(int encoded) {
+  public static String bor(int encoded) {
     return BOR_MAPPING_REVERSE.get(encoded % 100);
   }
 }

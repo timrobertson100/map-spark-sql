@@ -11,7 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
+package org.gbif.demo.udf;
 
 import org.gbif.maps.common.projection.*;
 
@@ -19,16 +19,36 @@ import java.io.Serializable;
 
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF3;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
 
-/** Returns the addresses ... todo document when ready */
+import lombok.AllArgsConstructor;
+
+/** Converts a given lat,lng into the global pixel space for a given projection and zoom level. */
+@AllArgsConstructor
 public class GlobalPixelUDF implements UDF3<Integer, Double, Double, Row>, Serializable {
-  static final int TILE_SIZE = 512;
-  static final TileProjection projection =
-      Tiles.fromEPSG("EPSG:3857", TILE_SIZE); // TODO: projections
+  final String epsg;
+  final int tileSize;
+
+  public static void register(SparkSession spark, String name, String epsg, int tileSize) {
+    spark
+        .udf()
+        .register(
+            name,
+            new GlobalPixelUDF(epsg, tileSize),
+            DataTypes.createStructType(
+                new StructField[] {
+                  DataTypes.createStructField("z", DataTypes.IntegerType, false),
+                  DataTypes.createStructField("x", DataTypes.LongType, false),
+                  DataTypes.createStructField("y", DataTypes.LongType, false)
+                }));
+  }
 
   @Override
   public Row call(Integer zoom, Double lat, Double lng) {
+    TileProjection projection = Tiles.fromEPSG(epsg, tileSize);
     if (projection.isPlottable(lat, lng)) {
 
       // Global coordinates for the projection at the maximum zoom

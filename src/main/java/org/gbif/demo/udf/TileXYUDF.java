@@ -11,7 +11,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
+package org.gbif.demo.udf;
 
 import org.gbif.maps.common.projection.*;
 
@@ -21,33 +21,59 @@ import java.util.stream.Collectors;
 
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.RowFactory;
+import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF3;
+import org.apache.spark.sql.types.DataTypes;
+import org.apache.spark.sql.types.StructField;
 
 import com.google.common.collect.Lists;
 
-/** Returns the tiles addresses for the given global coordinate */
+import lombok.AllArgsConstructor;
+
+/**
+ * Returns the tiles addresses(!) for the given global coordinate. Tiles have a buffer size, and so
+ * a point can fall on up to four tiles in corner regions.
+ */
+@AllArgsConstructor
 public class TileXYUDF implements UDF3<Integer, Long, Long, Row[]>, Serializable {
-  static final int TILE_SIZE = 512;
-  static final int BUFFER_SIZE = TILE_SIZE / 16;
-  static final TileProjection projection =
-      Tiles.fromEPSG("EPSG:3857", TILE_SIZE); // TODO: projections
-  static final TileSchema tileSchema = TileSchema.fromSRS("EPSG:3857"); // TODO: projections
+  final String epsg;
+  final int tileSize;
+  final int bufferSize;
+
+  public static void register(
+      SparkSession spark, String name, String epsg, int tileSize, int bufferSize) {
+    spark
+        .udf()
+        .register(
+            name,
+            new TileXYUDF(epsg, tileSize, bufferSize),
+            DataTypes.createArrayType(
+                DataTypes.createStructType(
+                    new StructField[] {
+                      // Designed to work until zoom 16; higher requires tileXY to be LongType
+                      DataTypes.createStructField("tileX", DataTypes.IntegerType, false),
+                      DataTypes.createStructField("tileY", DataTypes.IntegerType, false),
+                      DataTypes.createStructField("pixelX", DataTypes.IntegerType, false),
+                      DataTypes.createStructField("pixelY", DataTypes.IntegerType, false)
+                    })));
+  }
 
   @Override
   public Row[] call(Integer zoom, Long x, Long y) {
-
+    List<String> addresses = Lists.newArrayList();
     Double2D globalXY = new Double2D(x, y);
 
-    List<String> addresses = Lists.newArrayList();
-
-    Long2D tileXY = Tiles.toTileXY(globalXY, tileSchema, zoom, TILE_SIZE);
+    // Readdress coordinates onto their primary tile
+    TileSchema tileSchema = TileSchema.fromSRS(epsg);
+    Long2D tileXY = Tiles.toTileXY(globalXY, tileSchema, zoom, tileSize);
     Long2D localXY =
         Tiles.toTileLocalXY(
-            globalXY, tileSchema, zoom, tileXY.getX(), tileXY.getY(), TILE_SIZE, BUFFER_SIZE);
+            globalXY, tileSchema, zoom, tileXY.getX(), tileXY.getY(), tileSize, bufferSize);
     append(addresses, tileXY, localXY);
 
-    // Readdress any coordinates that fall in the boundary region of adjacent tiles
-    readdressAndAppend(addresses, globalXY, tileXY, zoom, localXY.getX(), localXY.getY());
+    // Readdress coordinates that fall in the buffer region of adjacent tiles
+    readdressAndAppend(
+        addresses, tileSchema, globalXY, tileXY, zoom, localXY.getX(), localXY.getY());
 
     List<Row> rows =
         addresses.stream()
@@ -69,54 +95,60 @@ public class TileXYUDF implements UDF3<Integer, Long, Long, Row[]>, Serializable
    * Takes the original x,y and if it lies within the boundary of adjacent tiles, adds the address
    * of the pixel.
    */
-  static void readdressAndAppend(
-      List<String> target, Double2D globalXY, Long2D tileXY, int zoom, long x, long y) {
+  void readdressAndAppend(
+      List<String> target,
+      TileSchema tileSchema,
+      Double2D globalXY,
+      Long2D tileXY,
+      int zoom,
+      long x,
+      long y) {
 
     // What follows needs tests and explained. A quick hack that doesn't deal with date lines
 
     if (zoom > 0) {
-      if (y < BUFFER_SIZE) {
+      if (y < bufferSize) {
         // N
         Long2D newTileXY = new Long2D(tileXY.getX(), tileXY.getY() - 1);
-        appendOnTile(target, globalXY, zoom, newTileXY);
+        appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
 
         // NW
-        if (x < BUFFER_SIZE) {
+        if (x < bufferSize) {
           newTileXY = new Long2D(tileXY.getX() - 1, tileXY.getY() - 1);
-          appendOnTile(target, globalXY, zoom, newTileXY);
+          appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
         }
 
         // NE
-        if (x >= TILE_SIZE - BUFFER_SIZE) {
+        if (x >= tileSize - bufferSize) {
           newTileXY = new Long2D(tileXY.getX() + 1, tileXY.getY() - 1);
-          appendOnTile(target, globalXY, zoom, newTileXY);
+          appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
         }
       }
-      if (x >= TILE_SIZE - BUFFER_SIZE) {
+      if (x >= tileSize - bufferSize) {
         // E
         Long2D newTileXY = new Long2D(tileXY.getX() + 1, tileXY.getY());
-        appendOnTile(target, globalXY, zoom, newTileXY);
+        appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
       }
-      if (y >= TILE_SIZE - BUFFER_SIZE) {
+      if (y >= tileSize - bufferSize) {
         // S
         Long2D newTileXY = new Long2D(tileXY.getX(), tileXY.getY() + 1);
-        appendOnTile(target, globalXY, zoom, newTileXY);
+        appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
 
-        if (x < BUFFER_SIZE) {
+        if (x < bufferSize) {
           // SW
           newTileXY = new Long2D(tileXY.getX() - 1, tileXY.getY() + 1);
-          appendOnTile(target, globalXY, zoom, newTileXY);
+          appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
         }
-        if (x >= TILE_SIZE - BUFFER_SIZE) {
+        if (x >= tileSize - bufferSize) {
           // SE
           newTileXY = new Long2D(tileXY.getX() + 1, tileXY.getY() + 1);
-          appendOnTile(target, globalXY, zoom, newTileXY);
+          appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
         }
       }
-      if (x < BUFFER_SIZE) {
+      if (x < bufferSize) {
         // W
         Long2D newTileXY = new Long2D(tileXY.getX() - 1, tileXY.getY());
-        appendOnTile(target, globalXY, zoom, newTileXY);
+        appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
       }
     }
 
@@ -125,23 +157,22 @@ public class TileXYUDF implements UDF3<Integer, Long, Long, Row[]>, Serializable
 
       // E
       Long2D newTileXY = new Long2D(tileXY.getX() + 1, tileXY.getY());
-      appendOnTile(target, globalXY, zoom, newTileXY);
+      appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
 
       // W
       newTileXY = new Long2D(tileXY.getX() - 1, tileXY.getY());
-      appendOnTile(target, globalXY, zoom, newTileXY);
+      appendOnTile(target, tileSchema, globalXY, zoom, newTileXY);
     }
   }
 
-  private static void appendOnTile(
-      List<String> target, Double2D globalXY, int zoom, Long2D tileXY) {
+  private void appendOnTile(
+      List<String> target, TileSchema tileSchema, Double2D globalXY, int zoom, Long2D tileXY) {
     Long2D localXY =
         Tiles.toTileLocalXY(
-            globalXY, tileSchema, zoom, tileXY.getX(), tileXY.getY(), TILE_SIZE, BUFFER_SIZE);
+            globalXY, tileSchema, zoom, tileXY.getX(), tileXY.getY(), tileSize, bufferSize);
     append(target, tileXY, localXY);
   }
 
-  /** Appends the encoded address for the given coordinates. */
   static void append(List<String> addresses, Long2D tileXY, Long2D localXY) {
     addresses.add(
         String.join(
