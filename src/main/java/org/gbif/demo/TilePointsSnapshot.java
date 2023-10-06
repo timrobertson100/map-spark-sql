@@ -93,22 +93,7 @@ public class TilePointsSnapshot {
         spark
             .read()
             .format("com.databricks.spark.avro")
-            .load("/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence");
-    source.createOrReplaceTempView("occurrence_input");
-
-    prepareInput(spark);
-
-    HBaseKeyUDF.registerPointKey(spark, "hbaseKey", new ModulusSalt(modulo));
-    Dataset<Row> t1 =
-        spark
-            .sql(
-                "SELECT "
-                    + "    /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
-                    + "    hbaseKey(m.mapKey), collect_list(struct(lat, lng, borYear, occCount)) AS features "
-                    + "  FROM "
-                    + "    point_map_input m "
-                    + "    JOIN map_stats s ON m.mapKey = s.mapKey " // threshold filter
-                    + "  GROUP BY m.mapKey")
+            .load("/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence")
             .select(
                 "datasetkey",
                 "publishingorgkey",
@@ -129,6 +114,20 @@ public class TilePointsSnapshot {
                 "year",
                 "occurrencestatus",
                 "hasgeospatialissues");
+    source.createOrReplaceTempView("occurrence_input");
+
+    prepareInput(spark);
+
+    HBaseKeyUDF.registerPointKey(spark, "hbaseKey", new ModulusSalt(modulo));
+    Dataset<Row> t1 =
+        spark.sql(
+            "SELECT "
+                + "    /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
+                + "    hbaseKey(m.mapKey), collect_list(struct(lat, lng, borYear, occCount)) AS features "
+                + "  FROM "
+                + "    point_map_input m "
+                + "    JOIN map_stats s ON m.mapKey = s.mapKey " // threshold filter
+                + "  GROUP BY m.mapKey");
     t1.createOrReplaceTempView("t1");
 
     JavaPairRDD<String, byte[]> t2 =
