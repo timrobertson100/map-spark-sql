@@ -15,6 +15,7 @@ package org.gbif.demo.udf;
 
 import java.io.Serializable;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
@@ -24,10 +25,12 @@ import org.apache.spark.sql.types.DataTypes;
 
 import com.google.common.collect.Sets;
 
+import lombok.AllArgsConstructor;
 import scala.collection.JavaConversions;
 import scala.collection.mutable.WrappedArray;
 
 /** Returns the map keys for the record. */
+@AllArgsConstructor
 public class MapKeysUDF
     implements UDF13<
             Integer,
@@ -46,8 +49,15 @@ public class MapKeysUDF
             String[]>,
         Serializable {
 
+  private Set<String> omitKeys;
+
   public static void register(SparkSession spark, String name) {
-    spark.udf().register(name, new MapKeysUDF(), DataTypes.createArrayType(DataTypes.StringType));
+    register(spark, name, new HashSet<>());
+  }
+
+  public static void register(SparkSession spark, String name, Set<String> omitKeys) {
+    MapKeysUDF udf = new MapKeysUDF(omitKeys);
+    spark.udf().register(name, udf, DataTypes.createArrayType(DataTypes.StringType));
   }
 
   // Maintain backwards compatible keys
@@ -99,10 +109,12 @@ public class MapKeysUDF
         appendNonNull(keys, "NETWORK", n);
       }
     }
+
+    keys.removeAll(omitKeys);
     return keys.toArray(new String[keys.size()]);
   }
 
-  static void appendNonNull(Set<String> target, String prefix, Object l) {
+  public static void appendNonNull(Set<String> target, String prefix, Object l) {
     if (l != null) target.add(MAPS_TYPES.get(prefix) + ":" + l);
   }
 }

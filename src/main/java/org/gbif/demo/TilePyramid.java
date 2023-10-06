@@ -30,7 +30,6 @@ import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.compress.SnappyCodec;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
-import org.apache.spark.Partitioner;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.function.PairFunction;
@@ -62,7 +61,7 @@ public class TilePyramid {
             "c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181",
             "tim",
             100,
-            "/tmp/tim",
+            "/tmp/tim/",
             250000,
             512,
             64,
@@ -72,7 +71,7 @@ public class TilePyramid {
 
   private void run() throws IOException {
     SparkSession spark =
-        SparkSession.builder().appName("SparkMapTest").enableHiveSupport().getOrCreate();
+        SparkSession.builder().appName("Map Tile Pyramid").enableHiveSupport().getOrCreate();
     SparkConf conf = spark.sparkContext().conf();
     conf.set("hive.exec.compress.output", "true");
     spark.sql("use " + hiveDB);
@@ -185,8 +184,7 @@ public class TilePyramid {
     t2.createOrReplaceTempView("t2");
 
     // readdress pixels onto tiles noting that addresses in buffer zones fall on multiple tiles
-    ModulusSalt salter = new ModulusSalt(modulo);
-    HBaseKeyUDF.register(spark, "hbaseKey", salter);
+    HBaseKeyUDF.registerTileKey(spark, "hbaseKey", new ModulusSalt(modulo));
     TileXYUDF.register(spark, "collectToTiles", epsg, tileSize, bufferSize);
     Dataset<Row> t3 =
         spark.sql(
@@ -260,24 +258,5 @@ public class TilePyramid {
     HTable table = new HTable(conf, targetTable);
     HFileOutputFormat2.configureIncrementalLoad(job, table);
     return job.getConfiguration(); // job created a copy of the conf
-  }
-
-  /** Partitions by the salt prefix on the given key (which aligns to HBase regions). */
-  private static class SaltPrefixPartitioner extends Partitioner {
-    final int numPartitions;
-
-    public SaltPrefixPartitioner(int saltLength) {
-      numPartitions = new Double(Math.pow(10, saltLength)).intValue();
-    }
-
-    @Override
-    public int getPartition(Object key) {
-      return ModulusSalt.saltFrom(key.toString());
-    }
-
-    @Override
-    public int numPartitions() {
-      return numPartitions;
-    }
   }
 }
