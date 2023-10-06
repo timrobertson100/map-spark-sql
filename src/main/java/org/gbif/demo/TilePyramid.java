@@ -94,7 +94,7 @@ public class TilePyramid {
 
       Dataset<Row> tileData = createTiles(spark, epsg, z);
       JavaPairRDD<String, byte[]> vectorTiles = generateMVTs(tileData);
-      writeHFiles(vectorTiles, epsg);
+      writeHFiles(vectorTiles, dir, epsg);
     }
   }
 
@@ -228,7 +228,8 @@ public class TilePyramid {
    * partitions the data using the modulus of the prefix salt to match the target regions, sorts
    * within the partitions and then creates the HFiles.
    */
-  private void writeHFiles(JavaPairRDD<String, byte[]> mvts, String epsg) throws IOException {
+  private void writeHFiles(JavaPairRDD<String, byte[]> mvts, String dir, String epsg)
+      throws IOException {
     byte[] colFamily = Bytes.toBytes(epsg.replaceAll(":", "_"));
     byte[] col = Bytes.toBytes("tile");
     ModulusSalt salter = new ModulusSalt(modulo);
@@ -243,7 +244,7 @@ public class TilePyramid {
                   return new Tuple2<>(key, row);
                 })
         .saveAsNewAPIHadoopFile(
-            targetDir,
+            dir,
             ImmutableBytesWritable.class,
             KeyValue.class,
             HFileOutputFormat2.class,
