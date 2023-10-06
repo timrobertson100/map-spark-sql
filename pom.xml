@@ -14,6 +14,7 @@
     <properties>
         <spark.version>2.3.0</spark.version>
         <scala.binary.version>2.11</scala.binary.version>
+        <databricks.spark.avro.version>4.0.0</databricks.spark.avro.version>
         <hadoop.version>2.6.0-cdh5.12.0</hadoop.version>
         <hbase.version>1.2.0-cdh5.12.0</hbase.version>
         <gbif.maps.version>0.36.1</gbif.maps.version>
@@ -51,6 +52,11 @@
             <artifactId>spark-sql_${scala.binary.version}</artifactId>
             <version>${spark.version}</version>
             <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>com.databricks</groupId>
+            <artifactId>spark-avro_${scala.binary.version}</artifactId>
+            <version>${databricks.spark.avro.version}</version>
         </dependency>
         <dependency>
             <groupId>org.apache.hadoop</groupId>
