@@ -26,7 +26,7 @@ import org.apache.spark.sql.types.StructField;
 
 import lombok.AllArgsConstructor;
 
-/** Converts a given lat,lng into the global pixel space for a given projection and zoom level. */
+/** Converts a lat,lng into the global pixel space for a given projection and zoom level. */
 @AllArgsConstructor
 public class GlobalPixelUDF implements UDF3<Integer, Double, Double, Row>, Serializable {
   final String epsg;
@@ -50,8 +50,6 @@ public class GlobalPixelUDF implements UDF3<Integer, Double, Double, Row>, Seria
   public Row call(Integer zoom, Double lat, Double lng) {
     TileProjection projection = Tiles.fromEPSG(epsg, tileSize);
     if (projection.isPlottable(lat, lng)) {
-
-      // Global coordinates for the projection at the maximum zoom
       Double2D globalXY = projection.toGlobalPixelXY(lat, lng, zoom);
       long x = Double.valueOf(globalXY.getX()).longValue();
       long y = Double.valueOf(globalXY.getY()).longValue();

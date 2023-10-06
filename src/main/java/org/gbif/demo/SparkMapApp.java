@@ -183,10 +183,6 @@ public class SparkMapApp {
                 + "    ) t AS tile "
                 + "  GROUP BY key");
     t3.createOrReplaceTempView("t3");
-
-    // generate the vector tiles
-    // VectorTileUDF.register(spark, "mvt", tileSize, bufferSize);
-    // return spark.sql("SELECT key, mvt(tile) AS mvt FROM t3");
     return t3;
   }
 
