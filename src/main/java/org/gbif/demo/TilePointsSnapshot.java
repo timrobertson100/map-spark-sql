@@ -19,10 +19,13 @@ import org.gbif.demo.udf.MapKeysUDF;
 import org.gbif.maps.common.hbase.ModulusSalt;
 
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.avro.generic.GenericRecord;
+import org.apache.avro.mapred.AvroKey;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
 import org.apache.hadoop.hbase.KeyValue;
@@ -30,16 +33,17 @@ import org.apache.hadoop.hbase.client.HTable;
 import org.apache.hadoop.hbase.io.ImmutableBytesWritable;
 import org.apache.hadoop.hbase.mapreduce.HFileOutputFormat2;
 import org.apache.hadoop.hbase.util.Bytes;
+import org.apache.hadoop.io.NullWritable;
 import org.apache.hadoop.io.compress.CompressionCodec;
 import org.apache.hadoop.io.compress.SnappyCodec;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
+import org.apache.spark.api.java.JavaRDD;
+import org.apache.spark.api.java.JavaSparkContext;
 import org.apache.spark.api.java.function.PairFunction;
-import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.*;
 
 import lombok.AllArgsConstructor;
 import scala.Tuple2;
@@ -82,6 +86,17 @@ public class TilePointsSnapshot {
     driver.run();
   }
 
+  public static JavaRDD<GenericRecord> loadAvroFile(JavaSparkContext sc, String avroPath) {
+    JavaPairRDD<AvroKey, NullWritable> records =
+        sc.newAPIHadoopFile(
+            avroPath,
+            AvroKeyCombineFileInputFormat.class,
+            AvroKey.class,
+            NullWritable.class,
+            sc.hadoopConfiguration());
+    return records.keys().map(x -> (GenericRecord) x.datum());
+  }
+
   private void run() throws IOException {
     SparkSession spark =
         SparkSession.builder().appName("Map Points").enableHiveSupport().getOrCreate();
@@ -89,32 +104,118 @@ public class TilePointsSnapshot {
     conf.set("hive.exec.compress.output", "true");
     spark.sql("use " + hiveDB);
 
-    Dataset<Row> source =
+    Dataset<Row> source2 =
         spark
             .read()
             .format("com.databricks.spark.avro")
             .load("/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence")
             .select(
-                "datasetkey",
-                "publishingorgkey",
-                "publishingcountry",
-                "networkkey",
-                "countrycode",
-                "basisofrecord",
-                "decimallatitude",
-                "decimallongitude",
-                "kingdomkey",
-                "phylumkey",
-                "classkey",
-                "orderkey",
-                "familykey",
-                "genuskey",
-                "specieskey",
-                "taxonkey",
+                "datasetKey",
+                "publishingOrgKey",
+                "publishingCountry",
+                "networkKey",
+                "countryCode",
+                "basisOfRecord",
+                "decimalLatitude",
+                "decimalLongitude",
+                "kingdomKey",
+                "phylumKey",
+                "classKey",
+                "orderKey",
+                "familyKey",
+                "genusKey",
+                "speciesKey",
+                "taxonKey",
                 "year",
-                "occurrencestatus",
-                "hasgeospatialissues");
-    source.createOrReplaceTempView("occurrence_input");
+                "occurrenceStatus",
+                "hasGeospatialIssues")
+            .filter(
+                "decimalLatitude IS NOT NULL AND "
+                    + "decimalLongitude IS NOT NULL AND "
+                    + "hasGeospatialIssues = false AND "
+                    + "occurrenceStatus='PRESENT' ")
+            .repartition(1200);
+
+    /*
+
+        Dataset<Row> sample =
+            spark
+                .read()
+                .format("com.databricks.spark.avro")
+                .load(
+                    "/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence/fff51e2c-0b63-4a54-afdc-5c4be905129c_5.avro");
+        StructType schemaSample = sample.schema();
+        System.out.println("Read a sample schema:");
+        System.out.println(schemaSample);
+        System.out.println("Now using a combine format...");
+
+        JavaRDD<GenericRecord> data =
+            loadAvroFile(
+                JavaSparkContext.fromSparkContext(spark.sparkContext()),
+                "/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence");
+
+        StructType schema =
+            new StructType()
+                .add("datasetkey", DataTypes.StringType, true)
+                .add("publishingorgkey", DataTypes.StringType, true)
+                .add("publishingcountry", DataTypes.StringType, true)
+                .add("networkkey", DataTypes.createArrayType(DataTypes.StringType, true), true)
+                .add("countrycode", DataTypes.StringType, true)
+                .add("basisofrecord", DataTypes.StringType, true)
+                .add("decimallatitude", DataTypes.DoubleType, true)
+                .add("decimallongitude", DataTypes.DoubleType, true)
+                .add("kingdomkey", DataTypes.IntegerType, true)
+                .add("phylumkey", DataTypes.IntegerType, true)
+                .add("classkey", DataTypes.IntegerType, true)
+                .add("orderkey", DataTypes.IntegerType, true)
+                .add("familykey", DataTypes.IntegerType, true)
+                .add("genuskey", DataTypes.IntegerType, true)
+                .add("specieskey", DataTypes.IntegerType, true)
+                .add("taxonkey", DataTypes.IntegerType, true)
+                .add("year", DataTypes.IntegerType, true)
+                .add("occurrencestatus", DataTypes.StringType, true)
+                .add("hasgeospatialissues", DataTypes.BooleanType, true);
+
+        JavaRDD<Row> d =
+            data.map(
+                x ->
+                    RowFactory.create(
+                        (String)x.get("datasetkey"),
+                        String.valueOf(x.get("publishingorgkey")),
+                        String.valueOf(x.get("publishingcountry")),
+                        (String[]) null, // x.get("networkkey")
+                        String.valueOf(x.get("countrycode")),
+                        String.valueOf(x.get("basisofrecord")),
+                        (Double) x.get("decimallatitude"),
+                        (Double) x.get("decimallongitude"),
+                        (Integer) x.get("kingdomkey"),
+                        (Integer) x.get("phylumkey"),
+                        (Integer) x.get("classkey"),
+                        (Integer) x.get("orderkey"),
+                        (Integer) x.get("familykey"),
+                        (Integer) x.get("genuskey"),
+                        (Integer) x.get("specieskey"),
+                        (Integer) x.get("taxonkey"),
+                        (Integer) x.get("year"),
+                        String.valueOf(x.get("occurrencestatus")),
+                        (Boolean) x.get("hasgeospatialissues")));
+
+        Dataset<Row> source = spark.createDataFrame(d, schema);
+    */
+
+    source2.createOrReplaceTempView("occurrence_input");
+
+    /*
+    JavaPairRDD<String, Long> counts = source2
+        .javaRDD().flatMap(row -> {
+          Set<String> mapKeys = null;
+          return mapKeys.stream().iterator();
+        }).mapToPair(s -> new Tuple2<>(s, 1l))
+        .reduceByKey((r1, r2) -> r1+r2)
+        .filter(r -> r._2 > threshold);
+
+*/
+
 
     prepareInput(spark);
 
@@ -126,7 +227,8 @@ public class TilePointsSnapshot {
                 + "    hbaseKey(m.mapKey), collect_list(struct(lat, lng, borYear, occCount)) AS features "
                 + "  FROM "
                 + "    point_map_input m "
-                + "    JOIN map_stats s ON m.mapKey = s.mapKey " // threshold filter
+                + "    LEFT JOIN point_map_stats s ON m.mapKey = s.mapKey " // threshold filter
+                + "  WHERE s.mapKey IS NULL"
                 + "  GROUP BY m.mapKey");
     t1.createOrReplaceTempView("t1");
 
@@ -213,24 +315,19 @@ public class TilePointsSnapshot {
                 + "      datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
                 + "    ) "
                 + "  ) m AS mapKey "
-                + "WHERE "
-                + "  decimalLatitude IS NOT NULL AND "
-                + "  decimalLongitude IS NOT NULL AND "
-                + "  hasGeospatialIssues = false AND "
-                + "  occurrenceStatus='PRESENT' "
                 + "GROUP BY mapKey, lat, lng, borYear",
             source));
 
     // Broadcasting a stats table proves faster than a windowing function and is simpler to grok
     spark.sparkContext().setJobDescription("Creating input stats using threshold of " + threshold);
-    spark.sql("DROP TABLE IF EXISTS map_stats");
+    spark.sql("DROP TABLE IF EXISTS point_map_stats");
     spark.sql(
         String.format(
-            "CREATE TABLE IF NOT EXISTS map_stats STORED AS PARQUET AS "
+            "CREATE TABLE IF NOT EXISTS point_map_stats STORED AS PARQUET AS "
                 + "SELECT mapKey, count(*) AS total "
                 + "FROM point_map_input "
                 + "GROUP BY mapKey "
-                + "HAVING count(*) < %d",
+                + "HAVING count(*) >= %d",
             threshold));
   }
 
