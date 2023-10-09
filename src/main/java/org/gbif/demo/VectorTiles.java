@@ -41,10 +41,8 @@ class VectorTiles implements Serializable {
     for (Row pixel : tileData) {
       int x = pixel.getAs("x");
       int y = pixel.getAs("y");
-      int i = pixel.fieldIndex("f"); // defensive
-      List<Row> features = pixel.getList(i);
-
       Point point = GEOMETRY_FACTORY.createPoint(new Coordinate(x, y));
+      List<Row> features = pixel.getList(pixel.fieldIndex("features"));
 
       // Restructures our encoded list of borYear:count to the target structure in the MVT
       Map<String, Map<String, Long>> target = new HashMap<>();

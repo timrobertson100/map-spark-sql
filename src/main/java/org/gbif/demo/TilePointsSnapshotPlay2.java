@@ -109,33 +109,11 @@ public class TilePointsSnapshotPlay2 implements Serializable {
     JavaPairRDD<String, byte[]> t3 =
         t2.javaRDD()
             .mapToPair(
-                (PairFunction<Row, String, byte[]>)
-                    row -> {
-                      String saltedKey = row.getString(0);
-                      List<Row> tileData = row.getList(1);
-
-                      PointFeatures.Builder tile = PointFeatures.newBuilder();
-                      PointFeatures.Feature.Builder feature = PointFeatures.Feature.newBuilder();
-
-                      tileData.stream()
-                          .forEach(
-                              f -> {
-                                String bor = EncodeBorYearUDF.bor(f.getAs("borYear"));
-                                Integer year = EncodeBorYearUDF.year(f.getAs("borYear"));
-                                year = year == null ? 0 : year;
-
-                                feature.setLatitude(f.getAs("lat"));
-                                feature.setLongitude(f.getAs("lng"));
-                                feature.setBasisOfRecord(
-                                    PointFeatures.Feature.BasisOfRecord.valueOf(bor));
-                                feature.setYear(year);
-
-                                tile.addFeatures(feature.build());
-                                feature.clear();
-                              });
-                      byte[] mvt = tile.build().toByteArray();
-                      return new Tuple2<>(saltedKey, mvt);
-                    });
+                row -> {
+                  String saltedKey = row.getString(0);
+                  byte[] pb = ProtobufTiles.generate(row);
+                  return new Tuple2<>(saltedKey, pb);
+                });
 
     ModulusSalt salter = new ModulusSalt(modulo);
     t3.repartitionAndSortWithinPartitions(new SaltPrefixPartitioner(salter.saltCharCount()))
