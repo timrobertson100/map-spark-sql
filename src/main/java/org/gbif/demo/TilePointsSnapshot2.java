@@ -46,7 +46,7 @@ import static org.gbif.maps.io.PointFeature.PointFeatures;
 import static org.gbif.maps.io.PointFeature.PointFeatures.Feature.BasisOfRecord;
 
 @AllArgsConstructor
-public class TilePointsSnapshot {
+public class TilePointsSnapshot2 {
   private final String source;
   private final String hiveDB;
   private final String zkQuorum;
@@ -56,8 +56,8 @@ public class TilePointsSnapshot {
   private final int threshold;
 
   public static void main(String[] args) throws IOException {
-    TilePointsSnapshot driver =
-        new TilePointsSnapshot(
+    TilePointsSnapshot2 driver =
+        new TilePointsSnapshot2(
             "prod_h.occurrence",
             "tim",
             "c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181",
@@ -214,17 +214,32 @@ public class TilePointsSnapshot {
             + "  mapKey, "
             + "  decimalLatitude AS lat, "
             + "  decimalLongitude AS lng, "
-            + "  encodeBorYear(basisOfRecord, year) AS borYear, " // improves performance
+            // + "  encodeBorYear(basisOfRecord, year) AS borYear, " // improves performance
+            + "  basisOfRecord, "
+            + "  year, "
             + "  count(*) AS occCount "
             + "FROM "
             + "  occurrence_input "
             + "  LATERAL VIEW explode(  "
-            + "    mapKeys("
-            + "      kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
-            + "      datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
-            + "    ) "
+            // + "    array_distinct("
+            + "      array("
+            + "        concat_ws(':', '1', CAST(kingdomKey AS String)), "
+            + "        concat_ws(':', '1', CAST(phylumKey AS String)), "
+            + "        concat_ws(':', '1', CAST(classKey AS String)), "
+            + "        concat_ws(':', '1', CAST(orderKey AS String)), "
+            + "        concat_ws(':', '1', CAST(familyKey AS String)), "
+            + "        concat_ws(':', '1', CAST(genusKey AS String)), "
+            + "        concat_ws(':', '1', CAST(speciesKey AS String)), "
+            + "        concat_ws(':', '1', CAST(taxonKey AS String)),"
+            + "        concat_ws(':', '2', datasetKey), "
+            + "        concat_ws(':', '3', publishingOrgKey), "
+            + "        concat_ws(':', '4', countryCode), "
+            + "        concat_ws(':', '5', publishingCountry)"
+            + "      )"
+            // TODO network
+            // + "    ) "
             + "  ) m AS mapKey "
-            + "GROUP BY mapKey, lat, lng, borYear");
+            + "GROUP BY mapKey, lat, lng, basisOfRecord, year");
 
     // Broadcasting a stats table proves faster than a windowing function and is simpler to grok
     spark.sparkContext().setJobDescription("Creating input stats using threshold of " + threshold);

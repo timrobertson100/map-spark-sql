@@ -54,7 +54,7 @@ public class HBaseKeyUDF implements Serializable {
 
     @Override
     public String call(String mapKey) {
-      return salter.saltToString(String.format("%s", mapKey));
+      return salter.saltToString(mapKey);
     }
   }
 }

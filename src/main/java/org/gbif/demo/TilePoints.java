@@ -96,7 +96,8 @@ public class TilePoints {
                 + "    hbaseKey(m.mapKey), collect_list(struct(lat, lng, borYear, occCount)) AS features "
                 + "  FROM "
                 + "    point_map_input m "
-                + "    JOIN map_stats s ON m.mapKey = s.mapKey " // threshold filter
+                + "    LEFT JOIN point_map_stats s ON m.mapKey = s.mapKey " // threshold filter
+                + "  WHERE s.mapKey IS NULL "
                 + "  GROUP BY m.mapKey");
     t1.createOrReplaceTempView("t1");
 
@@ -162,7 +163,7 @@ public class TilePoints {
    * filtering of data.
    */
   private void prepareInput(SparkSession spark) {
-    MapKeysUDF.register(spark, "mapKeys", omitKeys);
+    MapKeysUDF.register(spark, "mapKeys");
     EncodeBorYearUDF.register(spark, "encodeBorYear");
 
     spark.sql("DROP TABLE IF EXISTS point_map_input");
@@ -193,10 +194,10 @@ public class TilePoints {
 
     // Broadcasting a stats table proves faster than a windowing function and is simpler to grok
     spark.sparkContext().setJobDescription("Creating input stats using threshold of " + threshold);
-    spark.sql("DROP TABLE IF EXISTS map_stats");
+    spark.sql("DROP TABLE IF EXISTS point_map_stats");
     spark.sql(
         String.format(
-            "CREATE TABLE IF NOT EXISTS map_stats STORED AS PARQUET AS "
+            "CREATE TABLE IF NOT EXISTS point_map_stats STORED AS PARQUET AS "
                 + "SELECT mapKey, count(*) AS total "
                 + "FROM point_map_input "
                 + "GROUP BY mapKey "

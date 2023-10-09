@@ -18,7 +18,9 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.stream.Collectors;
 
+import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 import org.apache.spark.sql.api.java.UDF13;
 import org.apache.spark.sql.types.DataTypes;
@@ -49,14 +51,16 @@ public class MapKeysUDF
             String[]>,
         Serializable {
 
-  private Set<String> omitKeys;
+  private Set<String> denyOrApproveKeys;
+  private boolean isApprove;
 
   public static void register(SparkSession spark, String name) {
-    register(spark, name, new HashSet<>());
+    register(spark, name, new HashSet<>(), true);
   }
 
-  public static void register(SparkSession spark, String name, Set<String> omitKeys) {
-    MapKeysUDF udf = new MapKeysUDF(omitKeys);
+  public static void register(
+      SparkSession spark, String name, Set<String> denyOrApproveKeys, boolean isApprove) {
+    MapKeysUDF udf = new MapKeysUDF(denyOrApproveKeys, isApprove);
     spark.udf().register(name, udf, DataTypes.createArrayType(DataTypes.StringType));
   }
 
@@ -73,6 +77,23 @@ public class MapKeysUDF
           put("NETWORK", 6);
         }
       };
+
+  public String[] call(Row row) {
+    return call(
+        row.getAs("kingdomKey"),
+        row.getAs("phylumKey"),
+        row.getAs("classKey"),
+        row.getAs("orderKey"),
+        row.getAs("familyKey"),
+        row.getAs("genusKey"),
+        row.getAs("speciesKey"),
+        row.getAs("taxonKey"),
+        row.getAs("datasetKey"),
+        row.getAs("publishingOrgKey"),
+        row.getAs("countryCode"),
+        row.getAs("publishingCountry"),
+        row.getAs("networkKey"));
+  }
 
   @Override
   public String[] call(
@@ -110,7 +131,18 @@ public class MapKeysUDF
       }
     }
 
-    keys.removeAll(omitKeys);
+    if (!denyOrApproveKeys.isEmpty()) {
+      Set<String> filtered =
+          keys.stream()
+              .filter(
+                  s -> {
+                    if (isApprove) return denyOrApproveKeys.contains(s);
+                    else return !denyOrApproveKeys.contains(s);
+                  })
+              .collect(Collectors.toSet());
+      return filtered.toArray(new String[filtered.size()]);
+    }
+
     return keys.toArray(new String[keys.size()]);
   }
 
