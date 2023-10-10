@@ -119,20 +119,20 @@ class TileMapBuilder implements Serializable {
             String.format(
                 "      SELECT "
                     + "  mapKey, "
-                    + "  project(%d, lat, lng) AS zxy, "
+                    + "  project(%d, lat, lng) AS xy, "
                     + "  struct(borYear AS borYear, sum(occCount) AS occCount) AS borYearCount "
                     + "FROM %s "
-                    + "GROUP BY mapKey, zxy, borYear",
+                    + "GROUP BY mapKey, xy, borYear",
                 zoom, table));
     t1.createOrReplaceTempView("t1");
 
     // collect counts into a feature at the global pixel address
     Dataset<Row> t2 =
         spark.sql(
-            "SELECT mapKey, zxy, collect_list(borYearCount) as features"
+            "SELECT mapKey, xy, collect_list(borYearCount) as features"
                 + "  FROM t1 "
-                + "  WHERE zxy IS NOT NULL"
-                + "  GROUP BY mapKey, zxy");
+                + "  WHERE xy IS NOT NULL"
+                + "  GROUP BY mapKey, xy");
     t2.createOrReplaceTempView("t2");
 
     // readdress pixels onto tiles noting that addresses in buffer zones fall on multiple tiles
@@ -140,17 +140,19 @@ class TileMapBuilder implements Serializable {
     TileXYUDF.register(spark, "collectToTiles", epsg, tileSize, bufferSize);
     Dataset<Row> t3 =
         spark.sql(
-            "SELECT "
-                + "    hbaseKey(mapKey, zxy.z, tile.tileX, tile.tileY) AS key,"
-                + "    collect_list("
-                + "      struct(tile.pixelX AS x, tile.pixelY AS y, features)"
-                + "    ) AS tile "
-                + "  FROM "
-                + "    t2 "
-                + "    LATERAL VIEW explode("
-                + "      collectToTiles(zxy.z, zxy.x, zxy.y)" // readdresses global pixels
-                + "    ) t AS tile "
-                + "  GROUP BY key");
+            String.format(
+                "SELECT "
+                    + "    hbaseKey(mapKey, %d, tile.tileX, tile.tileY) AS key,"
+                    + "    collect_list("
+                    + "      struct(tile.pixelX AS x, tile.pixelY AS y, features)"
+                    + "    ) AS tile "
+                    + "  FROM "
+                    + "    t2 "
+                    + "    LATERAL VIEW explode("
+                    + "      collectToTiles(%d, xy.x, xy.y)" // readdresses global pixels
+                    + "    ) t AS tile "
+                    + "  GROUP BY key",
+                zoom, zoom));
     t3.createOrReplaceTempView("t3");
     return t3;
   }

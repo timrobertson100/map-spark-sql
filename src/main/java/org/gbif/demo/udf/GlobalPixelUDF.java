@@ -40,9 +40,8 @@ public class GlobalPixelUDF implements UDF3<Integer, Double, Double, Row>, Seria
             new GlobalPixelUDF(epsg, tileSize),
             DataTypes.createStructType(
                 new StructField[] {
-                  DataTypes.createStructField("z", DataTypes.IntegerType, false),
-                  DataTypes.createStructField("x", DataTypes.LongType, false),
-                  DataTypes.createStructField("y", DataTypes.LongType, false)
+                  DataTypes.createStructField("x", DataTypes.IntegerType, false),
+                  DataTypes.createStructField("y", DataTypes.IntegerType, false)
                 }));
   }
 
@@ -51,9 +50,9 @@ public class GlobalPixelUDF implements UDF3<Integer, Double, Double, Row>, Seria
     TileProjection projection = Tiles.fromEPSG(epsg, tileSize);
     if (projection.isPlottable(lat, lng)) {
       Double2D globalXY = projection.toGlobalPixelXY(lat, lng, zoom);
-      long x = Double.valueOf(globalXY.getX()).longValue();
-      long y = Double.valueOf(globalXY.getY()).longValue();
-      return RowFactory.create(zoom, Long.valueOf(x), Long.valueOf(y));
+      int x = Double.valueOf(globalXY.getX()).intValue();
+      int y = Double.valueOf(globalXY.getY()).intValue();
+      return RowFactory.create(Integer.valueOf(x), Integer.valueOf(y));
     }
     return null;
   }

@@ -18,8 +18,6 @@ import org.gbif.maps.common.hbase.ModulusSalt;
 
 import java.io.IOException;
 import java.io.Serializable;
-import java.util.Arrays;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
@@ -33,7 +31,6 @@ import org.apache.hadoop.io.compress.SnappyCodec;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Encoders;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
 
@@ -66,7 +63,7 @@ public class MapBuilder implements Serializable {
             .hbaseTable("tim")
             .modulo(100)
             .targetDir("/tmp/tim-points/")
-            .threshold(25000)
+            .threshold(250000)
             .buildPoints(true)
             .build();
     // points.run();
@@ -86,7 +83,7 @@ public class MapBuilder implements Serializable {
             .bufferSize(64)
             .maxZoom(16)
             .targetDir("/tmp/tim-tiles/")
-            .threshold(25000)
+            .threshold(250000)
             .buildTiles(true)
             .build();
     tiles.run();
@@ -100,10 +97,10 @@ public class MapBuilder implements Serializable {
 
     // Read the source Avro files and prepare them as performant tables
     String inputTable = String.format("%s_map_input", hivePrefix);
-    Dataset<Row> source = readAvroSource(spark, inputTable);
+    // readAvroSource(spark, inputTable);
 
     // Determine the mapKeys of maps that require a tile pyramid
-    Set<String> largeMapKeys = mapKeyExceedingThreshold(source);
+    Set<String> largeMapKeys = mapKeyExceedingThreshold(spark, inputTable);
 
     if (buildPoints) {
       PointMapBuilder.builder()
@@ -138,7 +135,7 @@ public class MapBuilder implements Serializable {
    * Hive table to defend against lazy evaluation that may cause the input avro files to be read
    * multiple times.
    */
-  private Dataset<Row> readAvroSource(SparkSession spark, String targetHiveTable) {
+  private void readAvroSource(SparkSession spark, String targetHiveTable) {
     Dataset<Row> source =
         spark
             .read()
@@ -173,28 +170,38 @@ public class MapBuilder implements Serializable {
 
     spark.sql(String.format("DROP TABLE IF EXISTS %s", targetHiveTable));
     source.write().format("parquet").saveAsTable(targetHiveTable);
-
-    // we do not return source, as any lazy evaluations will re-read avro
-    return spark.read().table(targetHiveTable);
   }
 
   /**
    * Extracts only those map keys that exceed the threshold of occurrence count, collected to the
    * Spark Driver
    */
-  private Set<String> mapKeyExceedingThreshold(Dataset<Row> source) {
-    MapKeysUDF mapKeysUDF = new MapKeysUDF(new HashSet<>(), true);
+  private Set<String> mapKeyExceedingThreshold(SparkSession spark, String source) {
+    MapKeysUDF.register(spark, "mapKeys");
     Dataset<Row> stats =
-        source
-            .flatMap(row -> Arrays.asList(mapKeysUDF.call(row)).iterator(), Encoders.STRING())
-            .toDF("mapKey")
-            .groupBy("mapKey")
-            .count()
-            .withColumnRenamed("count", "occCount")
+        spark
+            .sql(
+                String.format(
+                    "SELECT mapKey, count(*) AS occCount "
+                        + "FROM "
+                        + "  %s "
+                        + "  LATERAL VIEW explode(  "
+                        + "    mapKeys("
+                        + "      kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
+                        + "      datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
+                        + "    ) "
+                        + "  ) m AS mapKey "
+                        + "GROUP BY mapKey",
+                    source))
             .filter(String.format("occCount>=%d", threshold));
 
     List<Row> statsList = stats.collectAsList();
-    return statsList.stream().map(s -> (String) s.getAs("mapKey")).collect(Collectors.toSet());
+
+    Set<String> mapsToPyramid =
+        statsList.stream().map(s -> (String) s.getAs("mapKey")).collect(Collectors.toSet());
+    System.out.println(
+        String.format("Map views that require tile pyramid %d", mapsToPyramid.size()));
+    return mapsToPyramid;
   }
 
   /** Creates the Hadoop configuration suitable for writing HFiles */

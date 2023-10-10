@@ -35,7 +35,7 @@ import lombok.AllArgsConstructor;
  * a point can fall on up to four tiles in corner regions.
  */
 @AllArgsConstructor
-public class TileXYUDF implements UDF3<Integer, Long, Long, Row[]>, Serializable {
+public class TileXYUDF implements UDF3<Integer, Integer, Integer, Row[]>, Serializable {
   final String epsg;
   final int tileSize;
   final int bufferSize;
@@ -59,7 +59,7 @@ public class TileXYUDF implements UDF3<Integer, Long, Long, Row[]>, Serializable
   }
 
   @Override
-  public Row[] call(Integer zoom, Long x, Long y) {
+  public Row[] call(Integer zoom, Integer x, Integer y) {
     List<String> addresses = Lists.newArrayList();
     Double2D globalXY = new Double2D(x, y);
 
