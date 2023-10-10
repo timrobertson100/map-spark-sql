@@ -11,15 +11,19 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
+package org.gbif.demo.experiments;
 
+import org.gbif.demo.ProtobufTiles;
+import org.gbif.demo.SaltPrefixPartitioner;
 import org.gbif.demo.udf.EncodeBorYearUDF;
 import org.gbif.demo.udf.HBaseKeyUDF;
 import org.gbif.demo.udf.MapKeysUDF;
 import org.gbif.maps.common.hbase.ModulusSalt;
 
 import java.io.IOException;
-import java.util.List;
+import java.io.Serializable;
+import java.util.*;
+import java.util.stream.Collectors;
 
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hbase.HBaseConfiguration;
@@ -35,18 +39,13 @@ import org.apache.hadoop.mapreduce.lib.output.FileOutputFormat;
 import org.apache.spark.SparkConf;
 import org.apache.spark.api.java.JavaPairRDD;
 import org.apache.spark.api.java.function.PairFunction;
-import org.apache.spark.sql.Dataset;
-import org.apache.spark.sql.Row;
-import org.apache.spark.sql.SparkSession;
+import org.apache.spark.sql.*;
 
 import lombok.AllArgsConstructor;
 import scala.Tuple2;
 
-import static org.gbif.maps.io.PointFeature.PointFeatures;
-import static org.gbif.maps.io.PointFeature.PointFeatures.Feature.BasisOfRecord;
-
 @AllArgsConstructor
-public class TilePointsSnapshot {
+public class TilePointsSnapshotPlay2 implements Serializable {
   private final String source;
   private final String hiveDB;
   private final String zkQuorum;
@@ -56,8 +55,8 @@ public class TilePointsSnapshot {
   private final int threshold;
 
   public static void main(String[] args) throws IOException {
-    TilePointsSnapshot driver =
-        new TilePointsSnapshot(
+    TilePointsSnapshotPlay2 driver =
+        new TilePointsSnapshotPlay2(
             "prod_h.occurrence",
             "tim",
             "c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181",
@@ -75,53 +74,49 @@ public class TilePointsSnapshot {
     conf.set("hive.exec.compress.output", "true");
     spark.sql("use " + hiveDB);
 
-    prepareInput(spark);
+    Set<String> mapKeys = prepareInput(spark);
 
+    MapKeysUDF.register(spark, "mapKeys", mapKeys, false);
     HBaseKeyUDF.registerPointKey(spark, "hbaseKey", new ModulusSalt(modulo));
+    EncodeBorYearUDF.register(spark, "encodeBorYear");
     Dataset<Row> t1 =
         spark.sql(
             "SELECT "
-                + "    /*+ BROADCAST(map_stats) */ " // efficient threshold filtering
-                + "    hbaseKey(m.mapKey), collect_list(struct(lat, lng, borYear, occCount)) AS features "
+                + "    hbaseKey(mapKey) AS mapKey, "
+                + "    decimalLatitude AS lat, "
+                + "    decimalLongitude AS lng, "
+                + "    encodeBorYear(basisOfRecord, year) AS borYear, "
+                + "    count(*) AS occCount "
                 + "  FROM "
                 + "    point_map_input m "
-                + "    LEFT JOIN point_map_stats s ON m.mapKey = s.mapKey " // threshold filter
-                + "  WHERE s.mapKey IS NULL "
-                + "  GROUP BY m.mapKey");
+                + "    LATERAL VIEW explode(  "
+                + "      mapKeys("
+                + "        kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
+                + "        datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
+                + "      ) "
+                + "    ) m AS mapKey "
+                + "  GROUP BY mapKey, lat, lng, borYear");
     t1.createOrReplaceTempView("t1");
 
-    JavaPairRDD<String, byte[]> t2 =
-        t1.javaRDD()
+    Dataset<Row> t2 =
+        spark.sql(
+            "SELECT "
+                + "    mapKey, "
+                + "    collect_list(struct(lat, lng, borYear, occCount)) AS features"
+                + "  FROM t1"
+                + "  GROUP BY mapKey");
+
+    JavaPairRDD<String, byte[]> t3 =
+        t2.javaRDD()
             .mapToPair(
-                (PairFunction<Row, String, byte[]>)
-                    row -> {
-                      String saltedKey = row.getString(0);
-                      List<Row> tileData = row.getList(1);
-
-                      PointFeatures.Builder tile = PointFeatures.newBuilder();
-                      PointFeatures.Feature.Builder feature = PointFeatures.Feature.newBuilder();
-
-                      tileData.stream()
-                          .forEach(
-                              f -> {
-                                String bor = EncodeBorYearUDF.bor(f.getAs("borYear"));
-                                Integer year = EncodeBorYearUDF.year(f.getAs("borYear"));
-                                year = year == null ? 0 : year;
-
-                                feature.setLatitude(f.getAs("lat"));
-                                feature.setLongitude(f.getAs("lng"));
-                                feature.setBasisOfRecord(BasisOfRecord.valueOf(bor));
-                                feature.setYear(year);
-
-                                tile.addFeatures(feature.build());
-                                feature.clear();
-                              });
-                      byte[] mvt = tile.build().toByteArray();
-                      return new Tuple2<>(saltedKey, mvt);
-                    });
+                row -> {
+                  String saltedKey = row.getString(0);
+                  byte[] pb = ProtobufTiles.generate(row);
+                  return new Tuple2<>(saltedKey, pb);
+                });
 
     ModulusSalt salter = new ModulusSalt(modulo);
-    t2.repartitionAndSortWithinPartitions(new SaltPrefixPartitioner(salter.saltCharCount()))
+    t3.repartitionAndSortWithinPartitions(new SaltPrefixPartitioner(salter.saltCharCount()))
         .mapToPair(
             (PairFunction<Tuple2<String, byte[]>, ImmutableBytesWritable, KeyValue>)
                 kvp -> {
@@ -151,11 +146,12 @@ public class TilePointsSnapshot {
    * reduce computation on any task failure. An additional stats table is created to optimise
    * filtering of data.
    */
-  private void prepareInput(SparkSession spark) {
+  private Set<String> prepareInput(SparkSession spark) {
     Dataset<Row> source =
         spark
             .read()
             .format("com.databricks.spark.avro")
+            // .load("/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence/fff*.avro")
             .load("/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence/*.avro")
             .select(
                 "datasetKey",
@@ -181,62 +177,25 @@ public class TilePointsSnapshot {
                 "decimalLatitude IS NOT NULL AND "
                     + "decimalLongitude IS NOT NULL AND "
                     + "hasGeospatialIssues = false AND "
-                    + "occurrenceStatus='PRESENT' ");
+                    + "occurrenceStatus='PRESENT' ")
+            .repartition(spark.sparkContext().conf().getInt("spark.sql.shuffle.partitions", 1200));
 
-    // Source represents many small files so we repartition to remove NN pressure and task churn.
-    // 1200 provides 50MB compressed parquet files from 2.5B input
-    Dataset<Row> partitioned =
-        source.repartition(
-            spark.sparkContext().conf().getInt("spark.sql.shuffle.partitions", 1200)); //
-    spark.sql("DROP TABLE IF EXISTS occurrence_input");
-    partitioned.write().format("parquet").saveAsTable("occurrence_input");
-
-    /*
-    Set<String> omit = new HashSet<>();
-    MapKeysUDF.appendNonNull(omit, "ALL", 0);
-    for (int i = 0; i <= 8; i++) MapKeysUDF.appendNonNull(omit, "TAXON", i);
-    MapKeysUDF.appendNonNull(omit, "TAXON", 56);
-    MapKeysUDF.appendNonNull(omit, "TAXON", 212);
-    MapKeysUDF.appendNonNull(omit, "TAXON", 216);
-    MapKeysUDF.appendNonNull(omit, "TAXON", 729);
-    MapKeysUDF.appendNonNull(omit, "DATASET", "4fa7b334-ce0d-4e88-aaae-2e0c138d049e"); // EOD
-    MapKeysUDF.appendNonNull(omit, "DATASET", "38b4c89f-584c-41bb-bd8f-cd1def33e92f"); // artpo
-    MapKeysUDF.appendNonNull(omit, "DATASET", "8a863029-f435-446a-821e-275f4f641165"); // obs.org
-    MapKeysUDF.appendNonNull(omit, "DATASET", "50c9509d-22c7-4a22-a47d-8c48425ef4a7"); // iNat
-     */
-
-    MapKeysUDF.register(spark, "mapKeys");
-    EncodeBorYearUDF.register(spark, "encodeBorYear");
     spark.sql("DROP TABLE IF EXISTS point_map_input");
-    spark.sql(
-        "CREATE TABLE point_map_input STORED AS parquet AS "
-            + "SELECT "
-            + "  mapKey, "
-            + "  decimalLatitude AS lat, "
-            + "  decimalLongitude AS lng, "
-            + "  encodeBorYear(basisOfRecord, year) AS borYear, " // improves performance
-            + "  count(*) AS occCount "
-            + "FROM "
-            + "  occurrence_input "
-            + "  LATERAL VIEW explode(  "
-            + "    mapKeys("
-            + "      kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
-            + "      datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
-            + "    ) "
-            + "  ) m AS mapKey "
-            + "GROUP BY mapKey, lat, lng, borYear");
+    source.write().format("parquet").saveAsTable("point_map_input");
+    source = spark.read().table("point_map_input"); // defensive: avoid lazy evaluation
 
-    // Broadcasting a stats table proves faster than a windowing function and is simpler to grok
-    spark.sparkContext().setJobDescription("Creating input stats using threshold of " + threshold);
-    spark.sql("DROP TABLE IF EXISTS point_map_stats");
-    spark.sql(
-        String.format(
-            "CREATE TABLE IF NOT EXISTS point_map_stats STORED AS PARQUET AS "
-                + "SELECT mapKey, count(*) AS total "
-                + "FROM point_map_input "
-                + "GROUP BY mapKey "
-                + "HAVING count(*) >= %d",
-            threshold));
+    MapKeysUDF mapKeysUDF = new MapKeysUDF(new HashSet<>(), true);
+    Dataset<Row> stats =
+        source
+            .flatMap(row -> Arrays.asList(mapKeysUDF.call(row)).iterator(), Encoders.STRING())
+            .toDF("mapKey")
+            .groupBy("mapKey")
+            .count()
+            .withColumnRenamed("count", "occCount")
+            .filter("occCount>=250000");
+
+    List<Row> statsList = stats.collectAsList();
+    return statsList.stream().map(s -> (String) s.getAs("mapKey")).collect(Collectors.toSet());
   }
 
   private Configuration hadoopConf() throws IOException {

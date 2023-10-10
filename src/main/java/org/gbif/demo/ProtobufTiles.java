@@ -27,8 +27,8 @@ import static org.gbif.maps.io.PointFeature.PointFeatures.*;
 
 /** Generates a GBIF protobug tile from the structured input. */
 @AllArgsConstructor
-class ProtobufTiles implements Serializable {
-  static byte[] generate(Row row) {
+public class ProtobufTiles implements Serializable {
+  public static byte[] generate(Row row) {
     List<Row> tileData = row.getList(row.fieldIndex("features"));
     PointFeatures.Builder tile = PointFeatures.newBuilder();
     Feature.Builder feature = Feature.newBuilder();

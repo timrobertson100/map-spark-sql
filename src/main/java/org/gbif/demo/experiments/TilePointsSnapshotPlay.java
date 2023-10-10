@@ -11,8 +11,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
+package org.gbif.demo.experiments;
 
+import org.gbif.demo.SaltPrefixPartitioner;
 import org.gbif.demo.udf.EncodeBorYearUDF;
 import org.gbif.demo.udf.HBaseKeyUDF;
 import org.gbif.demo.udf.MapKeysUDF;
