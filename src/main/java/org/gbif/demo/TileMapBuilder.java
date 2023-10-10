@@ -158,8 +158,7 @@ class TileMapBuilder implements Serializable {
   /** Generates the Vector Tiles for the provided data. */
   private JavaPairRDD<String, byte[]> generateMVTs(Dataset<Row> source) {
     VectorTiles vectorTiles = new VectorTiles(tileSize, bufferSize);
-    // A UDF is avoided here as it proved slower due to conversion of the scala wrapper around the
-    // byte[].
+    // UDF avoided as it proved slower due to conversion of the scala wrapper around byte[]
     return source
         .toJavaRDD()
         .mapToPair(

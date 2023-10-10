@@ -22,6 +22,7 @@ import java.util.Map;
 
 import org.apache.spark.sql.Row;
 
+import com.google.common.base.Preconditions;
 import com.vividsolutions.jts.geom.Coordinate;
 import com.vividsolutions.jts.geom.GeometryFactory;
 import com.vividsolutions.jts.geom.Point;
@@ -41,14 +42,36 @@ class VectorTiles implements Serializable {
     for (Row pixel : tileData) {
       int x = pixel.getAs("x");
       int y = pixel.getAs("y");
+
+      /*
+            // 4326 is alarming slow: diagnostics to remove
+            Preconditions.checkArgument(
+                x >= -bufferSize && x <= tileSize + bufferSize,
+                "Pixel x cannot be " + x + " tileSize=" + tileSize + " bufferSize=" + bufferSize);
+            Preconditions.checkArgument(
+                y >= -bufferSize && y <= tileSize + bufferSize,
+                "Pixel y cannot be " + y + " tileSize=" + tileSize + " bufferSize=" + bufferSize);
+
+      */
+
       Point point = GEOMETRY_FACTORY.createPoint(new Coordinate(x, y));
       List<Row> features = pixel.getList(pixel.fieldIndex("features"));
 
       // Restructures our encoded list of borYear:count to the target structure in the MVT
       Map<String, Map<String, Long>> target = new HashMap<>();
+      /*
+      Preconditions.checkArgument(
+          features.size() < 1000, "Features are too big at " + features.size());
+
+       */
       for (Row encoded : features) {
         String bor = EncodeBorYearUDF.bor(encoded.getAs("borYear"));
         Integer year = EncodeBorYearUDF.year(encoded.getAs("borYear"));
+
+        // 4326 is alarming slow: diagnostics to remove
+        Preconditions.checkArgument(
+            year == null || year == 0 || (year >= 1500 && year < 2024), "Year cannot be " + year);
+
         long count = encoded.getAs("occCount");
         Map<String, Long> yearCounts = target.getOrDefault(bor, new HashMap<>());
         yearCounts.put(String.valueOf(year), count); // TODO: what are nulls meant to be?

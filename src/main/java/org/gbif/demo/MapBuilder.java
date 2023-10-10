@@ -73,6 +73,9 @@ public class MapBuilder implements Serializable {
 
     MapBuilder tiles =
         MapBuilder.builder()
+            // .sourceDir(
+            //
+            // "/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence/50c9509d*.avro")
             .sourceDir("/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence/*.avro")
             .hiveDB("tim")
             .hivePrefix("tiles")
