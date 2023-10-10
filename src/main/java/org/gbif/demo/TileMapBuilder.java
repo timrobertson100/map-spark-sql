@@ -129,7 +129,7 @@ class TileMapBuilder implements Serializable {
     // collect counts into a feature at the global pixel address
     Dataset<Row> t2 =
         spark.sql(
-            "    SELECT mapKey, zxy, collect_list(borYearCount) as features"
+            "SELECT mapKey, zxy, collect_list(borYearCount) as features"
                 + "  FROM t1 "
                 + "  WHERE zxy IS NOT NULL"
                 + "  GROUP BY mapKey, zxy");
@@ -140,7 +140,7 @@ class TileMapBuilder implements Serializable {
     TileXYUDF.register(spark, "collectToTiles", epsg, tileSize, bufferSize);
     Dataset<Row> t3 =
         spark.sql(
-            "    SELECT "
+            "SELECT "
                 + "    hbaseKey(mapKey, zxy.z, tile.tileX, tile.tileY) AS key,"
                 + "    collect_list("
                 + "      struct(tile.pixelX AS x, tile.pixelY AS y, features)"
