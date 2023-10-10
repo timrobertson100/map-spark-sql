@@ -52,21 +52,23 @@ class PointMapBuilder implements Serializable {
 
     Dataset<Row> countsByLocation =
         spark.sql(
-            "SELECT "
-                + "    hbaseKey(mapKey) AS mapKey, "
-                + "    decimalLatitude AS lat, "
-                + "    decimalLongitude AS lng, "
-                + "    encodeBorYear(basisOfRecord, year) AS borYear, "
-                + "    count(*) AS occCount "
-                + "  FROM "
-                + String.format("%s m", sourceTable)
-                + "    LATERAL VIEW explode(  "
-                + "      mapKeys("
-                + "        kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
-                + "        datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
-                + "      ) "
-                + "    ) m AS mapKey "
-                + "  GROUP BY mapKey, lat, lng, borYear");
+            String.format(
+                "        SELECT "
+                    + "    hbaseKey(mapKey) AS mapKey, "
+                    + "    decimalLatitude AS lat, "
+                    + "    decimalLongitude AS lng, "
+                    + "    encodeBorYear(basisOfRecord, year) AS borYear, "
+                    + "    count(*) AS occCount "
+                    + "  FROM "
+                    + "    %s m "
+                    + "    LATERAL VIEW explode(  "
+                    + "      mapKeys("
+                    + "        kingdomKey, phylumKey, classKey, orderKey, familyKey, genusKey, speciesKey, taxonKey,"
+                    + "        datasetKey, publishingOrgKey, countryCode, publishingCountry, networkKey"
+                    + "      ) "
+                    + "    ) m AS mapKey "
+                    + "  GROUP BY mapKey, lat, lng, borYear",
+                sourceTable));
     countsByLocation.createOrReplaceTempView("countsByLocation");
 
     Dataset<Row> mapData =
@@ -78,7 +80,7 @@ class PointMapBuilder implements Serializable {
                 + "  GROUP BY mapKey");
 
     // Create the protobuf tiles.
-    // UDFs is avoided due to the scala performance of wrapping around byte[]
+    // UDF avoided due to the scala performance of wrapping around byte[]
     JavaPairRDD<String, byte[]> encoded =
         mapData
             .javaRDD()
@@ -90,7 +92,7 @@ class PointMapBuilder implements Serializable {
                 })
             .repartitionAndSortWithinPartitions(new SaltPrefixPartitioner(salter.saltCharCount()));
 
-    // Convert to HFiles
+    // Convert and write HFiles
     encoded
         .mapToPair(
             (PairFunction<Tuple2<String, byte[]>, ImmutableBytesWritable, KeyValue>)

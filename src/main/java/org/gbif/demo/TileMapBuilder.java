@@ -202,7 +202,7 @@ class TileMapBuilder implements Serializable {
     spark.sql(String.format("DROP TABLE IF EXISTS %s", target));
     spark.sql(
         String.format(
-            "CREATE TABLE %s STORED AS parquet AS "
+            "      CREATE TABLE %s STORED AS parquet AS "
                 + "SELECT mapKey,lat,lng,borYear,occCount FROM %s WHERE %s",
             target, source, filter));
     return target;
