@@ -66,13 +66,11 @@ public class MapBuilder implements Serializable {
             .threshold(250000)
             .buildPoints(true)
             .build();
-    // points.run();
+    points.run();
 
     MapBuilder tiles =
         MapBuilder.builder()
-            // .sourceDir(
-            //
-            // "/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence/50c9509d*.avro")
+            // iNat for testing: "occurrence/50c9509d*.avro"
             .sourceDir("/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence/*.avro")
             .hiveDB("tim")
             .hivePrefix("tiles")
@@ -97,7 +95,7 @@ public class MapBuilder implements Serializable {
 
     // Read the source Avro files and prepare them as performant tables
     String inputTable = String.format("%s_map_input", hivePrefix);
-    // readAvroSource(spark, inputTable);
+    readAvroSource(spark, inputTable);
 
     // Determine the mapKeys of maps that require a tile pyramid
     Set<String> largeMapKeys = mapKeyExceedingThreshold(spark, inputTable);
@@ -165,11 +163,14 @@ public class MapBuilder implements Serializable {
                 "decimalLatitude IS NOT NULL AND "
                     + "decimalLongitude IS NOT NULL AND "
                     + "hasGeospatialIssues = false AND "
-                    + "occurrenceStatus='PRESENT' ")
-            .repartition(spark.sparkContext().conf().getInt("spark.sql.shuffle.partitions", 1200));
+                    + "occurrenceStatus='PRESENT' ");
 
+    // Default of 1200 yields 100MB files from 2.5B input
+    Dataset<Row> partitioned = source.repartition(spark.sparkContext().conf().getInt("spark.sql.shuffle.partitions", 1200));
+
+    // write as table to avoid any lazy evaluation re-reading small avro input
     spark.sql(String.format("DROP TABLE IF EXISTS %s", targetHiveTable));
-    source.write().format("parquet").saveAsTable(targetHiveTable);
+    partitioned.write().format("parquet").saveAsTable(targetHiveTable);
   }
 
   /**
