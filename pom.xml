@@ -20,6 +20,8 @@
         <gbif.maps.version>0.36.1</gbif.maps.version>
         <!-- fixed to gbif/maps for geotools -->
         <hsqldb.version>2.4.1</hsqldb.version>
+        <jackson.version>2.13.5</jackson.version>
+        <junit.version>5.10.0</junit.version>
         <lombok.version>1.18.30</lombok.version>
         <java.version>1.8</java.version>
     </properties>
@@ -66,6 +68,16 @@
             <version>${databricks.spark.avro.version}</version>
         </dependency>
         <dependency>
+            <groupId>com.fasterxml.jackson.core</groupId>
+            <artifactId>jackson-databind</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.fasterxml.jackson.dataformat</groupId>
+            <artifactId>jackson-dataformat-yaml</artifactId>
+            <version>${jackson.version}</version>
+        </dependency>
+        <dependency>
             <groupId>org.apache.hadoop</groupId>
             <artifactId>hadoop-common</artifactId>
             <version>${hadoop.version}</version>
@@ -92,14 +104,11 @@
                 </exclusion>
             </exclusions>
         </dependency>
-
         <dependency>
             <groupId>org.apache.hbase</groupId>
             <artifactId>hbase-server</artifactId>
             <version>${hbase.version}</version>
-            <!--
-              This is excluded since it stops the MRAppMaster in Oozie from even starting (when in Oozie).
-             -->
+            <!-- Stops the MRAppMaster in Oozie from even starting (when in Oozie) -->
             <exclusions>
                 <exclusion>
                     <groupId>org.apache.hadoop</groupId>
@@ -109,15 +118,18 @@
                     <groupId>org.mortbay.jetty</groupId>
                     <artifactId>*</artifactId>
                 </exclusion>
-                <!--
-                  Breaks spark2
-                -->
+                <!-- Breaks spark2 -->
                 <exclusion>
                     <groupId>io.netty</groupId>
                     <artifactId>*</artifactId>
                 </exclusion>
-
             </exclusions>
+        </dependency>
+        <dependency>
+            <groupId>org.junit.jupiter</groupId>
+            <artifactId>junit-jupiter-engine</artifactId>
+            <version>${junit.version}</version>
+            <scope>test</scope>
         </dependency>
     </dependencies>
 
@@ -146,7 +158,6 @@
                     </execution>
                 </executions>
             </plugin>
-            <!-- Spotless code on mvn:compile -->
             <plugin>
                 <groupId>com.diffplug.spotless</groupId>
                 <artifactId>spotless-maven-plugin</artifactId>

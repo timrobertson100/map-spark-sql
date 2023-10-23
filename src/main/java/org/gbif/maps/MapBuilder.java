@@ -11,10 +11,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
+package org.gbif.maps;
 
-import org.gbif.demo.udf.MapKeysUDF;
 import org.gbif.maps.common.hbase.ModulusSalt;
+import org.gbif.maps.udf.MapKeysUDF;
 
 import java.io.IOException;
 import java.io.Serializable;
@@ -36,12 +36,12 @@ import org.apache.spark.sql.SparkSession;
 
 import lombok.Builder;
 
-@Builder
+@Builder(toBuilder = true)
 public class MapBuilder implements Serializable {
   private final String sourceDir;
   private final String hiveDB;
   private final String zkQuorum;
-  private final String hivePrefix;
+  private final String hiveInputSuffix;
   private final String hbaseTable;
   private final int modulo;
   private final int tileSize;
@@ -53,48 +53,46 @@ public class MapBuilder implements Serializable {
   private boolean buildTiles;
 
   public static void main(String[] args) throws IOException {
-    // TODO: configuration
-    MapBuilder points =
+    MapBuilder common =
         MapBuilder.builder()
             .sourceDir("/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence/*.avro")
             .hiveDB("tim")
-            .hivePrefix("points")
             .zkQuorum("c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181")
             .hbaseTable("tim")
             .modulo(100)
-            .targetDir("/tmp/tim-points/")
             .threshold(250000)
+            .tileSize(512)
+            .bufferSize(64)
+            .maxZoom(16)
+            .build();
+
+    MapBuilder points =
+        common
+            .toBuilder()
+            .hiveInputSuffix("points")
+            .targetDir("/tmp/tim-map-points/")
             .buildPoints(true)
             .build();
     points.run();
 
     MapBuilder tiles =
-        MapBuilder.builder()
-            // iNat for testing: "occurrence/50c9509d*.avro"
-            .sourceDir("/data/hdfsview/occurrence/.snapshot/tim-occurrence-map/occurrence/*.avro")
-            .hiveDB("tim")
-            .hivePrefix("tiles")
-            .zkQuorum("c5zk1.gbif.org:2181,c5zk2.gbif.org:2181,c5zk3.gbif.org:2181")
-            .hbaseTable("tim")
-            .modulo(100)
-            .tileSize(512)
-            .bufferSize(64)
-            .maxZoom(16)
-            .targetDir("/tmp/tim-tiles/")
-            .threshold(250000)
+        common
+            .toBuilder()
+            .hiveInputSuffix("tiles")
+            .targetDir("/tmp/tim-map-tiles/")
             .buildTiles(true)
             .build();
     tiles.run();
   }
 
-  void run() throws IOException {
+  public void run() throws IOException {
     SparkSession spark =
         SparkSession.builder().appName("Map Builder").enableHiveSupport().getOrCreate();
     spark.sql("use " + hiveDB);
     spark.sparkContext().conf().set("hive.exec.compress.output", "true");
 
     // Read the source Avro files and prepare them as performant tables
-    String inputTable = String.format("%s_map_input", hivePrefix);
+    String inputTable = String.format("%s_map_input", hiveInputSuffix);
     readAvroSource(spark, inputTable);
 
     // Determine the mapKeys of maps that require a tile pyramid
@@ -166,7 +164,9 @@ public class MapBuilder implements Serializable {
                     + "occurrenceStatus='PRESENT' ");
 
     // Default of 1200 yields 100MB files from 2.5B input
-    Dataset<Row> partitioned = source.repartition(spark.sparkContext().conf().getInt("spark.sql.shuffle.partitions", 1200));
+    Dataset<Row> partitioned =
+        source.repartition(
+            spark.sparkContext().conf().getInt("spark.sql.shuffle.partitions", 1200));
 
     // write as table to avoid any lazy evaluation re-reading small avro input
     spark.sql(String.format("DROP TABLE IF EXISTS %s", targetHiveTable));

@@ -11,10 +11,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
+package org.gbif.maps;
 
-import org.gbif.demo.udf.*;
 import org.gbif.maps.common.hbase.ModulusSalt;
+import org.gbif.maps.udf.*;
 
 import java.io.Serializable;
 import java.util.List;

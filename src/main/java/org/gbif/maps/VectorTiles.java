@@ -11,9 +11,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package org.gbif.demo;
+package org.gbif.maps;
 
-import org.gbif.demo.udf.EncodeBorYearUDF;
+import org.gbif.maps.udf.EncodeBorYearUDF;
 
 import java.io.Serializable;
 import java.util.HashMap;
